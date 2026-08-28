@@ -9,4 +9,5 @@ class EpaperDisplay {
 
  private:
   bool initialized_ = false;
+  PsramImage frameBuffer_;
 };

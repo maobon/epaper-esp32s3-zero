@@ -92,9 +92,15 @@ bool inspectPsramImage(const PsramImage &image) {
   Serial.print("图片大小: ");
   Serial.print(image.size());
   Serial.println(" 字节");
+  const char *format = detectImageFormat(image);
   Serial.print("识别格式: ");
-  Serial.println(detectImageFormat(image));
+  Serial.println(format);
   printHeaderBytes(image);
+
+  if (strcmp(format, "PNG") != 0) {
+    Serial.println("图片不是有效的 PNG 文件，拒绝显示");
+    return false;
+  }
 
   const uint32_t checksum = calculateFnv1a(image);
   Serial.print("FNV-1a 校验值: 0x");

@@ -7,6 +7,10 @@
 #include "Secrets.h"
 
 bool connectWifi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
+  }
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(Secrets::kWifiSsid, Secrets::kWifiPassword);
   Serial.print("正在连接 Wi-Fi");

@@ -87,10 +87,12 @@ bool decodePngToMonochrome(const PsramImage &pngImage,
     return false;
   }
 
-  if (!frameBuffer.allocate(DisplayConfig::kFrameBufferSize)) {
-    Serial.println("无法在 PSRAM 中分配 1-bit 显示帧");
-    pngDecoder.close();
-    return false;
+  if (frameBuffer.capacity() < DisplayConfig::kFrameBufferSize) {
+    if (!frameBuffer.allocate(DisplayConfig::kFrameBufferSize)) {
+      Serial.println("无法在 PSRAM 中分配 1-bit 显示帧");
+      pngDecoder.close();
+      return false;
+    }
   }
   memset(frameBuffer.data(), 0xFF, DisplayConfig::kFrameBufferSize);
   frameBuffer.setSize(DisplayConfig::kFrameBufferSize);
@@ -107,7 +109,7 @@ bool decodePngToMonochrome(const PsramImage &pngImage,
   if (decodeResult != PNG_SUCCESS) {
     Serial.print("PNG 解码失败，错误码: ");
     Serial.println(decodeResult);
-    frameBuffer.clear();
+    frameBuffer.setSize(0);
     return false;
   }
 
@@ -132,14 +134,13 @@ bool EpaperDisplay::showPng(const PsramImage &pngImage) {
     return false;
   }
 
-  PsramImage frameBuffer;
-  if (!decodePngToMonochrome(pngImage, frameBuffer)) {
+  if (!decodePngToMonochrome(pngImage, frameBuffer_)) {
     return false;
   }
 
   Serial.println("正在将显示帧写入 SSD1677...");
   displayDriver.writeImageForFullRefresh(
-      frameBuffer.data(), 0, 0, DisplayConfig::kWidth,
+      frameBuffer_.data(), 0, 0, DisplayConfig::kWidth,
       DisplayConfig::kHeight, false, false, false);
   displayDriver.refresh(false);
   displayDriver.hibernate();

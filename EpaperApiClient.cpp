@@ -23,7 +23,8 @@ void configureTls(SecureClient &client) {
 
 class PsramImageWriteStream : public Stream {
  public:
-  explicit PsramImageWriteStream(PsramImage &image) : image_(image) {}
+  PsramImageWriteStream(PsramImage &image, size_t maximumSize)
+      : image_(image), maximumSize_(maximumSize) {}
 
   size_t write(uint8_t value) override {
     return write(&value, 1);
@@ -31,7 +32,8 @@ class PsramImageWriteStream : public Stream {
 
   size_t write(const uint8_t *buffer, size_t size) override {
     const size_t required = bytesWritten_ + size;
-    if (required < bytesWritten_ || !image_.ensureCapacity(required)) {
+    if (required < bytesWritten_ || required > maximumSize_ ||
+        !image_.ensureCapacity(required)) {
       return 0;
     }
 
@@ -60,6 +62,7 @@ class PsramImageWriteStream : public Stream {
 
  private:
   PsramImage &image_;
+  const size_t maximumSize_;
   size_t bytesWritten_ = 0;
 };
 
@@ -67,13 +70,7 @@ class PsramImageWriteStream : public Stream {
 
 bool EpaperApiClient::authenticate() {
   accessToken_.clear();
-  if (!login()) {
-    return false;
-  }
-
-  Serial.print("access_token: ");
-  Serial.println(accessToken_);
-  return true;
+  return login();
 }
 
 bool EpaperApiClient::fetchImage(const char *imageName,
@@ -179,6 +176,12 @@ bool EpaperApiClient::downloadImage(const char *imageName,
   }
 
   const int contentLength = http.getSize();
+  if (contentLength > 0 &&
+      static_cast<size_t>(contentLength) > AppConfig::kMaxImageSizeBytes) {
+    Serial.println("图片超过 2 MB 安全限制，拒绝下载");
+    http.end();
+    return false;
+  }
   const size_t initialCapacity =
       contentLength > 0 ? static_cast<size_t>(contentLength)
                         : AppConfig::kInitialImageCapacity;
@@ -191,14 +194,18 @@ bool EpaperApiClient::downloadImage(const char *imageName,
     return false;
   }
 
-  PsramImageWriteStream imageStream(downloadedImage);
+  PsramImageWriteStream imageStream(downloadedImage,
+                                    AppConfig::kMaxImageSizeBytes);
   const int bytesWritten = http.writeToStream(&imageStream);
   http.end();
 
-  if (bytesWritten <= 0 ||
-      imageStream.bytesWritten() != static_cast<size_t>(bytesWritten)) {
+  if (bytesWritten <= 0) {
     Serial.print("图片数据接收失败: ");
     Serial.println(http.errorToString(bytesWritten));
+    return false;
+  }
+  if (imageStream.bytesWritten() != static_cast<size_t>(bytesWritten)) {
+    Serial.println("图片数据接收不完整或超过 2 MB 安全限制");
     return false;
   }
 
