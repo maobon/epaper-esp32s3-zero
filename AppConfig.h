@@ -14,7 +14,7 @@ inline constexpr size_t kImageCount =
 inline constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 inline constexpr uint32_t kHttpTimeoutMs = 15000;
 inline constexpr uint32_t kImageCheckDelayMs = 2000;
-inline constexpr uint32_t kNextImageDelayMs = 2000;
+inline constexpr uint32_t kPageDisplayDurationMs = 30000;
 inline constexpr size_t kInitialImageCapacity = 32 * 1024;
 
 }  // namespace AppConfig
