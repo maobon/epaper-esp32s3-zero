@@ -3,6 +3,7 @@
 #include <PNGdec.h>
 #include <SPI.h>
 #include <GxEPD2_BW.h>
+#include <stdio.h>
 
 #include "DisplayConfig.h"
 
@@ -13,6 +14,12 @@ GxEPD2_426_GDEQ0426T82 displayDriver(
     DisplayConfig::kResetPin, DisplayConfig::kBusyPin);
 PNG pngDecoder;
 
+constexpr int kSensorPanelX = 610;
+constexpr int kSensorPanelY = 8;
+constexpr int kSensorPanelWidth = 180;
+constexpr int kSensorPanelHeight = 68;
+constexpr int kSensorTextScale = 3;
+
 struct DecodeContext {
   PsramImage *frameBuffer;
   int sourceWidth;
@@ -20,6 +27,124 @@ struct DecodeContext {
   bool rotateClockwise;
   uint16_t rgbLine[DisplayConfig::kWidth];
 };
+
+const uint8_t *glyphFor(char character) {
+  static constexpr uint8_t kSpace[] = {0x00, 0x00, 0x00, 0x00, 0x00};
+  static constexpr uint8_t kDash[] = {0x08, 0x08, 0x08, 0x08, 0x08};
+  static constexpr uint8_t kDot[] = {0x00, 0x60, 0x60, 0x00, 0x00};
+  static constexpr uint8_t kColon[] = {0x00, 0x36, 0x36, 0x00, 0x00};
+  static constexpr uint8_t kPercent[] = {0x63, 0x13, 0x08, 0x64, 0x63};
+  static constexpr uint8_t kC[] = {0x3E, 0x41, 0x41, 0x41, 0x22};
+  static constexpr uint8_t kH[] = {0x7F, 0x08, 0x08, 0x08, 0x7F};
+  static constexpr uint8_t kT[] = {0x01, 0x01, 0x7F, 0x01, 0x01};
+  static constexpr uint8_t kDigits[][5] = {
+      {0x3E, 0x51, 0x49, 0x45, 0x3E},
+      {0x00, 0x42, 0x7F, 0x40, 0x00},
+      {0x42, 0x61, 0x51, 0x49, 0x46},
+      {0x21, 0x41, 0x45, 0x4B, 0x31},
+      {0x18, 0x14, 0x12, 0x7F, 0x10},
+      {0x27, 0x45, 0x45, 0x45, 0x39},
+      {0x3C, 0x4A, 0x49, 0x49, 0x30},
+      {0x01, 0x71, 0x09, 0x05, 0x03},
+      {0x36, 0x49, 0x49, 0x49, 0x36},
+      {0x06, 0x49, 0x49, 0x29, 0x1E},
+  };
+
+  if (character >= '0' && character <= '9') {
+    return kDigits[character - '0'];
+  }
+  switch (character) {
+    case '-':
+      return kDash;
+    case '.':
+      return kDot;
+    case ':':
+      return kColon;
+    case '%':
+      return kPercent;
+    case 'C':
+      return kC;
+    case 'H':
+      return kH;
+    case 'T':
+      return kT;
+    default:
+      return kSpace;
+  }
+}
+
+void setFramePixel(PsramImage &frameBuffer, int x, int y, bool black) {
+  if (x < 0 || x >= DisplayConfig::kWidth || y < 0 ||
+      y >= DisplayConfig::kHeight) {
+    return;
+  }
+
+  const size_t byteOffset =
+      static_cast<size_t>(y) * DisplayConfig::kWidth / 8 +
+      static_cast<size_t>(x) / 8;
+  const uint8_t mask = 0x80U >> (x & 7);
+  if (black) {
+    frameBuffer.data()[byteOffset] &= static_cast<uint8_t>(~mask);
+  } else {
+    frameBuffer.data()[byteOffset] |= mask;
+  }
+}
+
+void fillFrameRectangle(PsramImage &frameBuffer, int x, int y, int width,
+                        int height, bool black) {
+  for (int row = y; row < y + height; ++row) {
+    for (int column = x; column < x + width; ++column) {
+      setFramePixel(frameBuffer, column, row, black);
+    }
+  }
+}
+
+void drawFrameText(PsramImage &frameBuffer, int x, int y, const char *text,
+                   int scale) {
+  while (*text != '\0') {
+    const uint8_t *glyph = glyphFor(*text++);
+    for (int column = 0; column < 5; ++column) {
+      for (int row = 0; row < 7; ++row) {
+        if ((glyph[column] & (1U << row)) == 0) {
+          continue;
+        }
+        fillFrameRectangle(frameBuffer, x + column * scale, y + row * scale,
+                           scale, scale, true);
+      }
+    }
+    x += 6 * scale;
+  }
+}
+
+void drawSensorPanel(PsramImage &frameBuffer, float temperatureCelsius,
+                     float relativeHumidity, bool sensorDataValid) {
+  fillFrameRectangle(frameBuffer, kSensorPanelX, kSensorPanelY,
+                     kSensorPanelWidth, kSensorPanelHeight, false);
+  fillFrameRectangle(frameBuffer, kSensorPanelX, kSensorPanelY,
+                     kSensorPanelWidth, 2, true);
+  fillFrameRectangle(frameBuffer, kSensorPanelX,
+                     kSensorPanelY + kSensorPanelHeight - 2,
+                     kSensorPanelWidth, 2, true);
+  fillFrameRectangle(frameBuffer, kSensorPanelX, kSensorPanelY, 2,
+                     kSensorPanelHeight, true);
+  fillFrameRectangle(frameBuffer,
+                     kSensorPanelX + kSensorPanelWidth - 2, kSensorPanelY, 2,
+                     kSensorPanelHeight, true);
+
+  char temperatureText[16] = "T:--.-C";
+  char humidityText[16] = "H:--.-%";
+  if (sensorDataValid) {
+    snprintf(temperatureText, sizeof(temperatureText), "T:%.1fC",
+             temperatureCelsius);
+    snprintf(humidityText, sizeof(humidityText), "H:%.1f%%",
+             relativeHumidity);
+  }
+
+  drawFrameText(frameBuffer, kSensorPanelX + 10, kSensorPanelY + 8,
+                temperatureText, kSensorTextScale);
+  drawFrameText(frameBuffer, kSensorPanelX + 10, kSensorPanelY + 39,
+                humidityText, kSensorTextScale);
+}
 
 uint8_t rgb565Luminance(uint16_t color) {
   const uint16_t red = ((color >> 11) & 0x1F) * 255 / 31;
@@ -128,7 +253,11 @@ bool EpaperDisplay::begin() {
   return true;
 }
 
-bool EpaperDisplay::showPng(const PsramImage &pngImage) {
+bool EpaperDisplay::showPng(const PsramImage &pngImage,
+                            float temperatureCelsius,
+                            float relativeHumidity,
+                            bool showSensorPanel,
+                            bool sensorDataValid) {
   if (!initialized_) {
     Serial.println("墨水屏尚未初始化");
     return false;
@@ -136,6 +265,11 @@ bool EpaperDisplay::showPng(const PsramImage &pngImage) {
 
   if (!decodePngToMonochrome(pngImage, frameBuffer_)) {
     return false;
+  }
+
+  if (showSensorPanel) {
+    drawSensorPanel(frameBuffer_, temperatureCelsius, relativeHumidity,
+                    sensorDataValid);
   }
 
   Serial.println("正在将显示帧写入 SSD1677...");

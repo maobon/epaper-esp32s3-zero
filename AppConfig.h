@@ -11,12 +11,15 @@ inline constexpr const char *kImageNames[] = {
     "currency", "landscape", "forecast", "portrait"};
 inline constexpr size_t kImageCount =
     sizeof(kImageNames) / sizeof(kImageNames[0]);
+inline constexpr size_t kForecastPageIndex = 2;
+static_assert(kForecastPageIndex < kImageCount,
+              "Forecast page index must refer to an image");
 inline constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 inline constexpr uint32_t kHttpTimeoutMs = 15000;
 inline constexpr uint32_t kSlideshowRetryIntervalMs = 60000;
 inline constexpr uint32_t kTimeSyncTimeoutMs = 10000;
 inline constexpr uint32_t kTimeSyncRetryIntervalMs = 60000;
-inline constexpr uint32_t kPageDisplayDurationMs = 30000;
+inline constexpr uint32_t kPageDisplayDurationMs = 15UL * 60UL * 1000UL;
 inline constexpr uint32_t kSensorReadIntervalMs = 5000;
 inline constexpr char kTimeZone[] = "CST-8";
 inline constexpr char kPrimaryNtpServer[] = "ntp.aliyun.com";

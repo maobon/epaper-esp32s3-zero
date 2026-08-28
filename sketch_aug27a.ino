@@ -29,6 +29,9 @@ bool displayReady = false;
 bool slideshowReady = false;
 bool sht41Ready = false;
 bool networkTimeReady = false;
+bool sensorDataValid = false;
+float latestTemperatureCelsius = 0.0F;
+float latestRelativeHumidity = 0.0F;
 
 bool getCurrentHourKey(int32_t &hourKey) {
   tm localTime = {};
@@ -83,6 +86,7 @@ void updateSht41() {
   if (!sht41Ready) {
     sht41Ready = sht41Sensor.begin();
     if (!sht41Ready) {
+      sensorDataValid = false;
       Serial.println("将在 5 秒后重新连接 SHT41");
       return;
     }
@@ -92,9 +96,14 @@ void updateSht41() {
   float relativeHumidity = 0.0F;
   if (!sht41Sensor.read(temperatureCelsius, relativeHumidity)) {
     sht41Ready = false;
+    sensorDataValid = false;
     Serial.println("将在 5 秒后重新连接 SHT41");
     return;
   }
+
+  latestTemperatureCelsius = temperatureCelsius;
+  latestRelativeHumidity = relativeHumidity;
+  sensorDataValid = true;
 
   Serial.print("SHT41 温度: ");
   Serial.print(temperatureCelsius, 2);
@@ -114,7 +123,11 @@ bool showPage(size_t pageIndex) {
   Serial.print(" 页: ");
   Serial.println(AppConfig::kImageNames[pageIndex]);
 
-  if (!epaperDisplay.showPng(downloadedImages[pageIndex])) {
+  if (!epaperDisplay.showPng(downloadedImages[pageIndex],
+                             latestTemperatureCelsius,
+                             latestRelativeHumidity,
+                             pageIndex == AppConfig::kForecastPageIndex,
+                             sensorDataValid)) {
     Serial.println("图片显示失败");
     return false;
   }
