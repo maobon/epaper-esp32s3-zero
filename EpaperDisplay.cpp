@@ -14,11 +14,15 @@ GxEPD2_426_GDEQ0426T82 displayDriver(
     DisplayConfig::kResetPin, DisplayConfig::kBusyPin);
 PNG pngDecoder;
 
-constexpr int kSensorPanelX = 610;
-constexpr int kSensorPanelY = 8;
-constexpr int kSensorPanelWidth = 180;
-constexpr int kSensorPanelHeight = 68;
-constexpr int kSensorTextScale = 3;
+// Sensor panel coordinates are expressed in the 480x800 portrait image space.
+// The display buffer itself is 800x480, so pixels are rotated when written.
+constexpr int kSensorPanelX = 320;
+constexpr int kSensorPanelY = 14;
+constexpr int kSensorPanelWidth = 155;
+constexpr int kSensorPanelHeight = 36;
+constexpr int kSensorTextScale = 2;
+static_assert(kSensorPanelX + kSensorPanelWidth <= DisplayConfig::kHeight);
+static_assert(kSensorPanelY + kSensorPanelHeight <= DisplayConfig::kWidth);
 
 struct DecodeContext {
   PsramImage *frameBuffer;
@@ -90,17 +94,21 @@ void setFramePixel(PsramImage &frameBuffer, int x, int y, bool black) {
   }
 }
 
-void fillFrameRectangle(PsramImage &frameBuffer, int x, int y, int width,
-                        int height, bool black) {
+void setPortraitPixel(PsramImage &frameBuffer, int x, int y, bool black) {
+  setFramePixel(frameBuffer, DisplayConfig::kWidth - 1 - y, x, black);
+}
+
+void fillPortraitRectangle(PsramImage &frameBuffer, int x, int y, int width,
+                           int height, bool black) {
   for (int row = y; row < y + height; ++row) {
     for (int column = x; column < x + width; ++column) {
-      setFramePixel(frameBuffer, column, row, black);
+      setPortraitPixel(frameBuffer, column, row, black);
     }
   }
 }
 
-void drawFrameText(PsramImage &frameBuffer, int x, int y, const char *text,
-                   int scale) {
+void drawPortraitText(PsramImage &frameBuffer, int x, int y, const char *text,
+                      int scale) {
   while (*text != '\0') {
     const uint8_t *glyph = glyphFor(*text++);
     for (int column = 0; column < 5; ++column) {
@@ -108,8 +116,8 @@ void drawFrameText(PsramImage &frameBuffer, int x, int y, const char *text,
         if ((glyph[column] & (1U << row)) == 0) {
           continue;
         }
-        fillFrameRectangle(frameBuffer, x + column * scale, y + row * scale,
-                           scale, scale, true);
+        fillPortraitRectangle(frameBuffer, x + column * scale,
+                              y + row * scale, scale, scale, true);
       }
     }
     x += 6 * scale;
@@ -118,32 +126,27 @@ void drawFrameText(PsramImage &frameBuffer, int x, int y, const char *text,
 
 void drawSensorPanel(PsramImage &frameBuffer, float temperatureCelsius,
                      float relativeHumidity, bool sensorDataValid) {
-  fillFrameRectangle(frameBuffer, kSensorPanelX, kSensorPanelY,
-                     kSensorPanelWidth, kSensorPanelHeight, false);
-  fillFrameRectangle(frameBuffer, kSensorPanelX, kSensorPanelY,
-                     kSensorPanelWidth, 2, true);
-  fillFrameRectangle(frameBuffer, kSensorPanelX,
-                     kSensorPanelY + kSensorPanelHeight - 2,
-                     kSensorPanelWidth, 2, true);
-  fillFrameRectangle(frameBuffer, kSensorPanelX, kSensorPanelY, 2,
-                     kSensorPanelHeight, true);
-  fillFrameRectangle(frameBuffer,
-                     kSensorPanelX + kSensorPanelWidth - 2, kSensorPanelY, 2,
-                     kSensorPanelHeight, true);
+  fillPortraitRectangle(frameBuffer, kSensorPanelX, kSensorPanelY,
+                        kSensorPanelWidth, kSensorPanelHeight, false);
+  fillPortraitRectangle(frameBuffer, kSensorPanelX, kSensorPanelY,
+                        kSensorPanelWidth, 2, true);
+  fillPortraitRectangle(frameBuffer, kSensorPanelX,
+                        kSensorPanelY + kSensorPanelHeight - 2,
+                        kSensorPanelWidth, 2, true);
+  fillPortraitRectangle(frameBuffer, kSensorPanelX, kSensorPanelY, 2,
+                        kSensorPanelHeight, true);
+  fillPortraitRectangle(frameBuffer,
+                        kSensorPanelX + kSensorPanelWidth - 2, kSensorPanelY,
+                        2, kSensorPanelHeight, true);
 
-  char temperatureText[16] = "T:--.-C";
-  char humidityText[16] = "H:--.-%";
+  char sensorText[24] = "--.-C --.-%";
   if (sensorDataValid) {
-    snprintf(temperatureText, sizeof(temperatureText), "T:%.1fC",
-             temperatureCelsius);
-    snprintf(humidityText, sizeof(humidityText), "H:%.1f%%",
-             relativeHumidity);
+    snprintf(sensorText, sizeof(sensorText), "%.1fC %.1f%%",
+             temperatureCelsius, relativeHumidity);
   }
 
-  drawFrameText(frameBuffer, kSensorPanelX + 10, kSensorPanelY + 8,
-                temperatureText, kSensorTextScale);
-  drawFrameText(frameBuffer, kSensorPanelX + 10, kSensorPanelY + 39,
-                humidityText, kSensorTextScale);
+  drawPortraitText(frameBuffer, kSensorPanelX + 10, kSensorPanelY + 11,
+                   sensorText, kSensorTextScale);
 }
 
 uint8_t rgb565Luminance(uint16_t color) {

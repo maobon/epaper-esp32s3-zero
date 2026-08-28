@@ -21,15 +21,24 @@ bool PsramImage::allocate(size_t initialCapacity) {
   return true;
 }
 
-bool PsramImage::ensureCapacity(size_t requiredCapacity) {
+bool PsramImage::ensureCapacity(size_t requiredCapacity,
+                                size_t maximumCapacity) {
+  if (requiredCapacity > maximumCapacity) {
+    return false;
+  }
   if (requiredCapacity <= capacity_) {
     return true;
   }
 
   size_t newCapacity = capacity_;
   while (newCapacity < requiredCapacity) {
-    const size_t doubled = newCapacity * 2;
-    newCapacity = doubled > newCapacity ? doubled : requiredCapacity;
+    if (newCapacity == 0) {
+      newCapacity = requiredCapacity;
+    } else if (newCapacity > maximumCapacity / 2) {
+      newCapacity = maximumCapacity;
+    } else {
+      newCapacity *= 2;
+    }
   }
 
   uint8_t *newData = static_cast<uint8_t *>(ps_realloc(data_, newCapacity));

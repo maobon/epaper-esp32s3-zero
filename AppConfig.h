@@ -19,7 +19,12 @@ inline constexpr uint32_t kHttpTimeoutMs = 15000;
 inline constexpr uint32_t kSlideshowRetryIntervalMs = 60000;
 inline constexpr uint32_t kTimeSyncTimeoutMs = 10000;
 inline constexpr uint32_t kTimeSyncRetryIntervalMs = 60000;
+inline constexpr uint8_t kHourlyImageRefreshMinute = 15;
+static_assert(kHourlyImageRefreshMinute < 60,
+              "Hourly refresh minute must be between 0 and 59");
+inline constexpr uint32_t kInitialPreviewPageDurationMs = 10UL * 1000UL;
 inline constexpr uint32_t kPageDisplayDurationMs = 15UL * 60UL * 1000UL;
+inline constexpr uint32_t kPageDisplayRetryIntervalMs = 30UL * 1000UL;
 inline constexpr uint32_t kSensorReadIntervalMs = 5000;
 inline constexpr char kTimeZone[] = "CST-8";
 inline constexpr char kPrimaryNtpServer[] = "ntp.aliyun.com";

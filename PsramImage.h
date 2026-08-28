@@ -11,7 +11,8 @@ class PsramImage {
   PsramImage &operator=(const PsramImage &) = delete;
 
   bool allocate(size_t initialCapacity);
-  bool ensureCapacity(size_t requiredCapacity);
+  bool ensureCapacity(size_t requiredCapacity,
+                      size_t maximumCapacity = SIZE_MAX);
   void setSize(size_t size);
   void clear();
   void swap(PsramImage &other);

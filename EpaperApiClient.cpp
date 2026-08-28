@@ -33,7 +33,7 @@ class PsramImageWriteStream : public Stream {
   size_t write(const uint8_t *buffer, size_t size) override {
     const size_t required = bytesWritten_ + size;
     if (required < bytesWritten_ || required > maximumSize_ ||
-        !image_.ensureCapacity(required)) {
+        !image_.ensureCapacity(required, maximumSize_)) {
       return 0;
     }
 
@@ -206,6 +206,10 @@ bool EpaperApiClient::downloadImage(const char *imageName,
   }
   if (imageStream.bytesWritten() != static_cast<size_t>(bytesWritten)) {
     Serial.println("图片数据接收不完整或超过 2 MB 安全限制");
+    return false;
+  }
+  if (contentLength > 0 && bytesWritten != contentLength) {
+    Serial.println("图片实际接收长度与 Content-Length 不一致");
     return false;
   }
 
