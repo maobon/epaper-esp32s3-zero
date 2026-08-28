@@ -68,7 +68,8 @@ bool Sht41Sensor::read(float &temperatureCelsius,
       (static_cast<uint16_t>(data[3]) << 8) | data[4];
 
   temperatureCelsius =
-      -45.0F + 175.0F * static_cast<float>(rawTemperature) / 65535.0F;
+      -45.0F + 175.0F * static_cast<float>(rawTemperature) / 65535.0F +
+      AppConfig::kSht41TemperatureOffsetCelsius;
   relativeHumidity =
       -6.0F + 125.0F * static_cast<float>(rawHumidity) / 65535.0F;
   relativeHumidity = constrain(relativeHumidity, 0.0F, 100.0F);

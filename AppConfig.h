@@ -25,7 +25,8 @@ static_assert(kHourlyImageRefreshMinute < 60,
 inline constexpr uint32_t kInitialPreviewPageDurationMs = 10UL * 1000UL;
 inline constexpr uint32_t kPageDisplayDurationMs = 15UL * 60UL * 1000UL;
 inline constexpr uint32_t kPageDisplayRetryIntervalMs = 30UL * 1000UL;
-inline constexpr uint32_t kSensorReadIntervalMs = 5000;
+inline constexpr uint32_t kSensorReadIntervalMs = 30000;
+inline constexpr float kSht41TemperatureOffsetCelsius = -1.65F;
 inline constexpr char kTimeZone[] = "CST-8";
 inline constexpr char kPrimaryNtpServer[] = "ntp.aliyun.com";
 inline constexpr char kSecondaryNtpServer[] = "pool.ntp.org";
