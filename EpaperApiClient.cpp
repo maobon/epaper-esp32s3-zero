@@ -292,10 +292,11 @@ bool EpaperApiClient::downloadNews(NewsList &destination) {
     return false;
   }
 
-  // The response also contains summaries and image URLs that the e-paper page
-  // does not use. Filtering them while parsing keeps JSON memory usage small.
+  // Only retain the text rendered by the e-paper news pages. Filtering image
+  // URLs and other metadata keeps JSON memory usage small.
   JsonDocument responseFilter;
   responseFilter["news"][0]["title"] = true;
+  responseFilter["news"][0]["summary"] = true;
   JsonDocument responseJson;
   const DeserializationError jsonError =
       deserializeJson(responseJson, responseBody,
@@ -325,6 +326,7 @@ bool EpaperApiClient::downloadNews(NewsList &destination) {
 
     NewsItem &item = refreshedNews.items[refreshedNews.count++];
     item.title = title;
+    item.summary = itemJson["summary"] | "";
   }
 
   if (refreshedNews.count == 0) {

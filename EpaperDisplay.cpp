@@ -4,6 +4,7 @@
 #include <SPI.h>
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSerifBold18pt7b.h>
 #include <stdio.h>
@@ -28,11 +29,13 @@ constexpr int kSensorPanelWidth = 155;
 constexpr int kSensorPanelHeight = 36;
 constexpr int kSensorTextScale = 2;
 constexpr int kNewsLeftMargin = 30;
-constexpr int kNewsTitleX = 78;
+constexpr int kNewsTitleX = kNewsLeftMargin;
 constexpr int kNewsFirstRowY = 82;
-constexpr int kNewsRowHeight = 78;
+constexpr int kNewsRowHeight = 130;
 constexpr int kNewsTitleWidth =
     DisplayConfig::kWidth - kNewsTitleX - kNewsLeftMargin;
+constexpr int kNewsTextTopPadding = 6;
+constexpr int kNewsSummaryGap = 32;
 static_assert(kSensorPanelX + kSensorPanelWidth <= DisplayConfig::kHeight);
 static_assert(kSensorPanelY + kSensorPanelHeight <= DisplayConfig::kWidth);
 
@@ -255,9 +258,12 @@ struct NewsTitleLayout {
   int lineAdvance = 0;
 };
 
-struct NewsNumberLayout {
-  String text;
-  int baseline = 0;
+struct NewsSummaryLayout {
+  String firstLine;
+  String secondLine;
+  String thirdLine;
+  int firstBaseline = 0;
+  int lineAdvance = 0;
 };
 
 NewsTitleLayout prepareNewsTitle(const String &rawTitle, int y) {
@@ -267,14 +273,13 @@ NewsTitleLayout prepareNewsTitle(const String &rawTitle, int y) {
   displayDriver.setTextSize(1);
   size_t offset = 0;
   layout.firstLine = takeWrappedLine(title, offset, kNewsTitleWidth);
-  layout.secondLine = takeWrappedLine(title, offset, kNewsTitleWidth);
   if (offset < title.length()) {
-    while (!layout.secondLine.isEmpty() &&
-           newsTextWidth(layout.secondLine + "...") > kNewsTitleWidth) {
-      layout.secondLine.remove(layout.secondLine.length() - 1);
+    while (!layout.firstLine.isEmpty() &&
+           newsTextWidth(layout.firstLine + "...") > kNewsTitleWidth) {
+      layout.firstLine.remove(layout.firstLine.length() - 1);
     }
-    layout.secondLine.trim();
-    layout.secondLine += "...";
+    layout.firstLine.trim();
+    layout.firstLine += "...";
   }
 
   int16_t boundsX = 0;
@@ -284,25 +289,16 @@ NewsTitleLayout prepareNewsTitle(const String &rawTitle, int y) {
   displayDriver.getTextBounds(layout.firstLine, 0, 0, &boundsX, &boundsY,
                               &boundsWidth, &boundsHeight);
   int ascent = boundsY < 0 ? -boundsY : 0;
-  int descent = boundsY + boundsHeight > 0 ? boundsY + boundsHeight : 0;
 
-  const bool hasSecondLine = !layout.secondLine.isEmpty();
-  if (hasSecondLine) {
+  if (!layout.secondLine.isEmpty()) {
     displayDriver.getTextBounds(layout.secondLine, 0, 0, &boundsX, &boundsY,
                                 &boundsWidth, &boundsHeight);
     const int secondAscent = boundsY < 0 ? -boundsY : 0;
-    const int secondDescent =
-        boundsY + boundsHeight > 0 ? boundsY + boundsHeight : 0;
     ascent = secondAscent > ascent ? secondAscent : ascent;
-    descent = secondDescent > descent ? secondDescent : descent;
   }
 
   layout.lineAdvance = pgm_read_byte(&FreeSansBold12pt7b.yAdvance);
-  const int contentHeight = kNewsRowHeight - 3;
-  const int textBlockHeight =
-      ascent + descent + (hasSecondLine ? layout.lineAdvance : 0);
-  layout.firstBaseline =
-      y + (contentHeight - textBlockHeight) / 2 + ascent;
+  layout.firstBaseline = y + kNewsTextTopPadding + ascent;
   return layout;
 }
 
@@ -318,32 +314,51 @@ void drawNewsTitle(const NewsTitleLayout &layout) {
   }
 }
 
-NewsNumberLayout prepareNewsNumber(size_t itemNumber, int rowTop) {
-  NewsNumberLayout layout;
-  if (itemNumber < 10) {
-    layout.text += '0';
-  }
-  layout.text += itemNumber;
-
-  displayDriver.setFont(&FreeSansBold12pt7b);
+NewsSummaryLayout prepareNewsSummary(const String &rawSummary,
+                                     const NewsTitleLayout &titleLayout) {
+  NewsSummaryLayout layout;
+  const String summary = normalizeNewsText(rawSummary);
+  displayDriver.setFont(&FreeSans12pt7b);
   displayDriver.setTextSize(1);
-  int16_t boundsX = 0;
-  int16_t boundsY = 0;
-  uint16_t boundsWidth = 0;
-  uint16_t boundsHeight = 0;
-  displayDriver.getTextBounds(layout.text, 0, 0, &boundsX, &boundsY,
-                              &boundsWidth, &boundsHeight);
-  const int contentHeight = kNewsRowHeight - 3;
-  layout.baseline =
-      rowTop + (contentHeight - boundsHeight) / 2 - boundsY;
+  size_t offset = 0;
+  layout.firstLine = takeWrappedLine(summary, offset, kNewsTitleWidth);
+  layout.secondLine = takeWrappedLine(summary, offset, kNewsTitleWidth);
+  layout.thirdLine = takeWrappedLine(summary, offset, kNewsTitleWidth);
+  if (offset < summary.length()) {
+    while (!layout.thirdLine.isEmpty() &&
+           newsTextWidth(layout.thirdLine + "...") > kNewsTitleWidth) {
+      layout.thirdLine.remove(layout.thirdLine.length() - 1);
+    }
+    layout.thirdLine.trim();
+    layout.thirdLine += "...";
+  }
+
+  layout.lineAdvance = pgm_read_byte(&FreeSans12pt7b.yAdvance);
+  const int titleLastBaseline =
+      titleLayout.firstBaseline +
+      (!titleLayout.secondLine.isEmpty() ? titleLayout.lineAdvance : 0);
+  layout.firstBaseline = titleLastBaseline + kNewsSummaryGap;
   return layout;
 }
 
-void drawNewsNumber(const NewsNumberLayout &layout) {
-  displayDriver.setFont(&FreeSansBold12pt7b);
+void drawNewsSummary(const NewsSummaryLayout &layout) {
+  if (layout.firstLine.isEmpty()) {
+    return;
+  }
+  displayDriver.setFont(&FreeSans12pt7b);
   displayDriver.setTextSize(1);
-  displayDriver.setCursor(kNewsLeftMargin, layout.baseline);
-  displayDriver.print(layout.text);
+  displayDriver.setCursor(kNewsTitleX, layout.firstBaseline);
+  displayDriver.print(layout.firstLine);
+  if (!layout.secondLine.isEmpty()) {
+    displayDriver.setCursor(kNewsTitleX,
+                            layout.firstBaseline + layout.lineAdvance);
+    displayDriver.print(layout.secondLine);
+  }
+  if (!layout.thirdLine.isEmpty()) {
+    displayDriver.setCursor(kNewsTitleX,
+                            layout.firstBaseline + 2 * layout.lineAdvance);
+    displayDriver.print(layout.thirdLine);
+  }
 }
 
 uint8_t rgb565Luminance(uint16_t color) {
@@ -493,7 +508,7 @@ bool EpaperDisplay::showNews(const NewsList &news, size_t firstItemIndex,
   const bool hasVisibleNews = dataValid && firstItemIndex < news.count;
   size_t visibleItemCount = 0;
   NewsTitleLayout titleLayouts[AppConfig::kNewsItemsPerPage];
-  NewsNumberLayout numberLayouts[AppConfig::kNewsItemsPerPage];
+  NewsSummaryLayout summaryLayouts[AppConfig::kNewsItemsPerPage];
   if (hasVisibleNews) {
     const size_t remainingItemCount = news.count - firstItemIndex;
     visibleItemCount =
@@ -506,10 +521,26 @@ bool EpaperDisplay::showNews(const NewsList &news, size_t firstItemIndex,
          ++visibleIndex) {
       const size_t itemIndex = firstItemIndex + visibleIndex;
       const int rowTop = kNewsFirstRowY + visibleIndex * kNewsRowHeight;
-      numberLayouts[visibleIndex] =
-          prepareNewsNumber(itemIndex + 1, rowTop);
       titleLayouts[visibleIndex] =
           prepareNewsTitle(news.items[itemIndex].title, rowTop);
+      summaryLayouts[visibleIndex] = prepareNewsSummary(
+          news.items[itemIndex].summary, titleLayouts[visibleIndex]);
+
+      size_t summaryLineCount = 0;
+      if (!summaryLayouts[visibleIndex].firstLine.isEmpty()) {
+        ++summaryLineCount;
+      }
+      if (!summaryLayouts[visibleIndex].secondLine.isEmpty()) {
+        ++summaryLineCount;
+      }
+      if (!summaryLayouts[visibleIndex].thirdLine.isEmpty()) {
+        ++summaryLineCount;
+      }
+      const int verticalOffset =
+          static_cast<int>(3 - summaryLineCount) *
+          summaryLayouts[visibleIndex].lineAdvance / 2;
+      titleLayouts[visibleIndex].firstBaseline += verticalOffset;
+      summaryLayouts[visibleIndex].firstBaseline += verticalOffset;
     }
   }
 
@@ -548,16 +579,8 @@ bool EpaperDisplay::showNews(const NewsList &news, size_t firstItemIndex,
     } else {
       for (size_t visibleIndex = 0; visibleIndex < visibleItemCount;
            ++visibleIndex) {
-        const int rowTop =
-            kNewsFirstRowY + visibleIndex * kNewsRowHeight;
-        drawNewsNumber(numberLayouts[visibleIndex]);
         drawNewsTitle(titleLayouts[visibleIndex]);
-
-        if (visibleIndex + 1 < visibleItemCount) {
-          displayDriver.drawFastHLine(
-              kNewsLeftMargin, rowTop + kNewsRowHeight - 3,
-              DisplayConfig::kWidth - 2 * kNewsLeftMargin, GxEPD_BLACK);
-        }
+        drawNewsSummary(summaryLayouts[visibleIndex]);
       }
     }
   } while (displayDriver.nextPage());

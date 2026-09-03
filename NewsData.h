@@ -6,6 +6,7 @@
 
 struct NewsItem {
   String title;
+  String summary;
 };
 
 struct NewsList {
@@ -15,6 +16,7 @@ struct NewsList {
   void clear() {
     for (size_t index = 0; index < count; ++index) {
       items[index].title.clear();
+      items[index].summary.clear();
     }
     count = 0;
   }

@@ -13,10 +13,11 @@ inline constexpr const char *kImageNames[] = {
 inline constexpr size_t kImageCount =
     sizeof(kImageNames) / sizeof(kImageNames[0]);
 inline constexpr size_t kNewsPageIndex = kImageCount;
-inline constexpr size_t kNewsPageCount = 2;
-inline constexpr size_t kNewsItemsPerPage = 5;
+inline constexpr size_t kNewsPageCount = 4;
+inline constexpr size_t kNewsItemsPerPage = 3;
 inline constexpr size_t kNewsItemCount =
     kNewsPageCount * kNewsItemsPerPage;
+inline constexpr size_t kInterfaceCount = kImageCount + 1;
 inline constexpr size_t kPageCount = kImageCount + kNewsPageCount;
 static_assert(kNewsPageCount > 0 && kNewsItemsPerPage > 0,
               "News pagination must not be empty");
@@ -35,7 +36,12 @@ inline constexpr uint32_t kTimeSyncRetryIntervalMs = 60000;
 inline constexpr uint32_t kContentRefreshIntervalMs =
     3UL * 60UL * 60UL * 1000UL;
 inline constexpr uint32_t kInitialPreviewPageDurationMs = 10UL * 1000UL;
-inline constexpr uint32_t kPageDisplayDurationMs = 10UL * 60UL * 1000UL;
+inline constexpr uint32_t kInterfaceDisplayDurationMs =
+    8UL * 60UL * 1000UL;
+inline constexpr uint32_t kNewsPageDisplayDurationMs =
+    kInterfaceDisplayDurationMs / kNewsPageCount;
+static_assert(kInterfaceDisplayDurationMs % kNewsPageCount == 0,
+              "News pages must divide the interface duration evenly");
 inline constexpr uint32_t kPageDisplayRetryIntervalMs = 30UL * 1000UL;
 inline constexpr bool kSht41Enabled = false;
 inline constexpr uint32_t kSensorReadIntervalMs = 30000;

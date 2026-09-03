@@ -181,6 +181,15 @@ bool isPageDisplayDue(uint32_t now, uint32_t pageDurationMs,
   return now - lastPageChangeMs >= pageDurationMs;
 }
 
+uint32_t currentPageDisplayDurationMs() {
+  const bool isNewsPage =
+      currentPageIndex >= AppConfig::kNewsPageIndex &&
+      currentPageIndex <
+          AppConfig::kNewsPageIndex + AppConfig::kNewsPageCount;
+  return isNewsPage ? AppConfig::kNewsPageDisplayDurationMs
+                    : AppConfig::kInterfaceDisplayDurationMs;
+}
+
 bool refreshContent() {
   if (!hasPendingContentRefresh()) {
     return true;
@@ -244,7 +253,7 @@ bool initializeSlideshow() {
   }
   lastContentRefreshMs = millis();
 
-  Serial.print(AppConfig::kPageCount);
+  Serial.print(AppConfig::kInterfaceCount);
   Serial.println(" 个界面的数据已准备完成，开始循环展示");
   if (!showPage(0)) {
     Serial.println("首页显示失败，无法启动图片轮播");
@@ -253,7 +262,7 @@ bool initializeSlideshow() {
 
   initialPreviewActive = true;
   initialPreviewPagesShown = 1;
-  Serial.println("开始首次快速预览，每张图片显示 10 秒");
+  Serial.println("开始首次快速预览，每个页面显示 10 秒");
   slideshowReady = true;
   return true;
 }
@@ -327,7 +336,7 @@ void loop() {
       AppConfig::kContentRefreshRetryIntervalMs;
   if (contentRefreshDue && refreshRetryDue) {
     Serial.print("已到 3 小时内容更新时间，正在重新请求 ");
-    Serial.print(AppConfig::kPageCount);
+    Serial.print(AppConfig::kInterfaceCount);
     Serial.println(" 个页面的数据...");
     if (!hasPendingContentRefresh()) {
       markAllContentForRefresh();
@@ -352,10 +361,11 @@ void loop() {
       }
     } else if (showPage(0)) {
       initialPreviewActive = false;
-      Serial.println("首次快速预览完成，开始正常轮播");
+      Serial.println(
+          "首次快速预览完成，开始正常轮播：每个界面显示 8 分钟");
     }
   } else if (!initialPreviewActive &&
-             isPageDisplayDue(now, AppConfig::kPageDisplayDurationMs,
+             isPageDisplayDue(now, currentPageDisplayDurationMs(),
                               AppConfig::kPageDisplayRetryIntervalMs)) {
     const size_t nextPageIndex =
         (currentPageIndex + 1) % AppConfig::kPageCount;
