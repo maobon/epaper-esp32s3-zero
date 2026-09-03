@@ -3,15 +3,21 @@
 #include <PNGdec.h>
 #include <SPI.h>
 #include <GxEPD2_BW.h>
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSerifBold18pt7b.h>
 #include <stdio.h>
 
 #include "DisplayConfig.h"
 
 namespace {
 
-GxEPD2_426_GDEQ0426T82 displayDriver(
-    DisplayConfig::kChipSelectPin, DisplayConfig::kDataCommandPin,
-    DisplayConfig::kResetPin, DisplayConfig::kBusyPin);
+// A small paged buffer leaves enough internal RAM for Wi-Fi/TLS and JSON.
+// The news drawing callback is replayed once per 40-row band by GxEPD2.
+GxEPD2_BW<GxEPD2_426_GDEQ0426T82, 40>
+    displayDriver(GxEPD2_426_GDEQ0426T82(
+        DisplayConfig::kChipSelectPin, DisplayConfig::kDataCommandPin,
+        DisplayConfig::kResetPin, DisplayConfig::kBusyPin));
 PNG pngDecoder;
 
 // Sensor panel coordinates are expressed in the 480x800 portrait image space.
@@ -21,6 +27,12 @@ constexpr int kSensorPanelY = 14;
 constexpr int kSensorPanelWidth = 155;
 constexpr int kSensorPanelHeight = 36;
 constexpr int kSensorTextScale = 2;
+constexpr int kNewsLeftMargin = 30;
+constexpr int kNewsTitleX = 78;
+constexpr int kNewsFirstRowY = 82;
+constexpr int kNewsRowHeight = 78;
+constexpr int kNewsTitleWidth =
+    DisplayConfig::kWidth - kNewsTitleX - kNewsLeftMargin;
 static_assert(kSensorPanelX + kSensorPanelWidth <= DisplayConfig::kHeight);
 static_assert(kSensorPanelY + kSensorPanelHeight <= DisplayConfig::kWidth);
 
@@ -147,6 +159,191 @@ void drawSensorPanel(PsramImage &frameBuffer, float temperatureCelsius,
 
   drawPortraitText(frameBuffer, kSensorPanelX + 10, kSensorPanelY + 11,
                    sensorText, kSensorTextScale);
+}
+
+String normalizeNewsText(const String &text) {
+  String normalized;
+  normalized.reserve(text.length());
+  for (size_t index = 0; index < text.length();) {
+    const uint8_t current = static_cast<uint8_t>(text[index]);
+    if (current >= 0x20 && current < 0x7F) {
+      normalized += static_cast<char>(current);
+      ++index;
+      continue;
+    }
+
+    if (current == 0xC2 && index + 1 < text.length() &&
+        static_cast<uint8_t>(text[index + 1]) == 0xA0) {
+      normalized += ' ';
+      index += 2;
+      continue;
+    }
+    if (current == 0xE2 && index + 2 < text.length() &&
+        static_cast<uint8_t>(text[index + 1]) == 0x80) {
+      const uint8_t punctuation = static_cast<uint8_t>(text[index + 2]);
+      if (punctuation == 0x98 || punctuation == 0x99) {
+        normalized += '\'';
+      } else if (punctuation == 0x9C || punctuation == 0x9D) {
+        normalized += '"';
+      } else if (punctuation == 0x93 || punctuation == 0x94) {
+        normalized += '-';
+      } else if (punctuation == 0xA6) {
+        normalized += "...";
+      }
+      index += 3;
+      continue;
+    }
+
+    const size_t sequenceLength =
+        (current & 0xE0) == 0xC0 ? 2 : (current & 0xF0) == 0xE0 ? 3 : 4;
+    normalized += '?';
+    index += sequenceLength;
+  }
+  return normalized;
+}
+
+uint16_t newsTextWidth(const String &text) {
+  int16_t boundsX = 0;
+  int16_t boundsY = 0;
+  uint16_t width = 0;
+  uint16_t height = 0;
+  displayDriver.getTextBounds(text, 0, 0, &boundsX, &boundsY, &width, &height);
+  return width;
+}
+
+String takeWrappedLine(const String &text, size_t &offset,
+                       uint16_t maximumWidth) {
+  while (offset < text.length() && text[offset] == ' ') {
+    ++offset;
+  }
+  if (offset >= text.length()) {
+    return String();
+  }
+
+  const size_t lineStart = offset;
+  size_t lastSpace = SIZE_MAX;
+  for (size_t index = lineStart; index < text.length(); ++index) {
+    if (text[index] == ' ') {
+      lastSpace = index;
+    }
+    if (newsTextWidth(text.substring(lineStart, index + 1)) <= maximumWidth) {
+      continue;
+    }
+
+    size_t lineEnd = lastSpace != SIZE_MAX && lastSpace > lineStart
+                         ? lastSpace
+                         : index;
+    if (lineEnd == lineStart) {
+      lineEnd = index + 1;
+    }
+    String line = text.substring(lineStart, lineEnd);
+    line.trim();
+    offset = lineEnd;
+    return line;
+  }
+
+  String line = text.substring(lineStart);
+  line.trim();
+  offset = text.length();
+  return line;
+}
+
+struct NewsTitleLayout {
+  String firstLine;
+  String secondLine;
+  int firstBaseline = 0;
+  int lineAdvance = 0;
+};
+
+struct NewsNumberLayout {
+  String text;
+  int baseline = 0;
+};
+
+NewsTitleLayout prepareNewsTitle(const String &rawTitle, int y) {
+  NewsTitleLayout layout;
+  const String title = normalizeNewsText(rawTitle);
+  displayDriver.setFont(&FreeSansBold12pt7b);
+  displayDriver.setTextSize(1);
+  size_t offset = 0;
+  layout.firstLine = takeWrappedLine(title, offset, kNewsTitleWidth);
+  layout.secondLine = takeWrappedLine(title, offset, kNewsTitleWidth);
+  if (offset < title.length()) {
+    while (!layout.secondLine.isEmpty() &&
+           newsTextWidth(layout.secondLine + "...") > kNewsTitleWidth) {
+      layout.secondLine.remove(layout.secondLine.length() - 1);
+    }
+    layout.secondLine.trim();
+    layout.secondLine += "...";
+  }
+
+  int16_t boundsX = 0;
+  int16_t boundsY = 0;
+  uint16_t boundsWidth = 0;
+  uint16_t boundsHeight = 0;
+  displayDriver.getTextBounds(layout.firstLine, 0, 0, &boundsX, &boundsY,
+                              &boundsWidth, &boundsHeight);
+  int ascent = boundsY < 0 ? -boundsY : 0;
+  int descent = boundsY + boundsHeight > 0 ? boundsY + boundsHeight : 0;
+
+  const bool hasSecondLine = !layout.secondLine.isEmpty();
+  if (hasSecondLine) {
+    displayDriver.getTextBounds(layout.secondLine, 0, 0, &boundsX, &boundsY,
+                                &boundsWidth, &boundsHeight);
+    const int secondAscent = boundsY < 0 ? -boundsY : 0;
+    const int secondDescent =
+        boundsY + boundsHeight > 0 ? boundsY + boundsHeight : 0;
+    ascent = secondAscent > ascent ? secondAscent : ascent;
+    descent = secondDescent > descent ? secondDescent : descent;
+  }
+
+  layout.lineAdvance = pgm_read_byte(&FreeSansBold12pt7b.yAdvance);
+  const int contentHeight = kNewsRowHeight - 3;
+  const int textBlockHeight =
+      ascent + descent + (hasSecondLine ? layout.lineAdvance : 0);
+  layout.firstBaseline =
+      y + (contentHeight - textBlockHeight) / 2 + ascent;
+  return layout;
+}
+
+void drawNewsTitle(const NewsTitleLayout &layout) {
+  displayDriver.setFont(&FreeSansBold12pt7b);
+  displayDriver.setTextSize(1);
+  displayDriver.setCursor(kNewsTitleX, layout.firstBaseline);
+  displayDriver.print(layout.firstLine);
+  if (!layout.secondLine.isEmpty()) {
+    displayDriver.setCursor(kNewsTitleX,
+                            layout.firstBaseline + layout.lineAdvance);
+    displayDriver.print(layout.secondLine);
+  }
+}
+
+NewsNumberLayout prepareNewsNumber(size_t itemNumber, int rowTop) {
+  NewsNumberLayout layout;
+  if (itemNumber < 10) {
+    layout.text += '0';
+  }
+  layout.text += itemNumber;
+
+  displayDriver.setFont(&FreeSansBold12pt7b);
+  displayDriver.setTextSize(1);
+  int16_t boundsX = 0;
+  int16_t boundsY = 0;
+  uint16_t boundsWidth = 0;
+  uint16_t boundsHeight = 0;
+  displayDriver.getTextBounds(layout.text, 0, 0, &boundsX, &boundsY,
+                              &boundsWidth, &boundsHeight);
+  const int contentHeight = kNewsRowHeight - 3;
+  layout.baseline =
+      rowTop + (contentHeight - boundsHeight) / 2 - boundsY;
+  return layout;
+}
+
+void drawNewsNumber(const NewsNumberLayout &layout) {
+  displayDriver.setFont(&FreeSansBold12pt7b);
+  displayDriver.setTextSize(1);
+  displayDriver.setCursor(kNewsLeftMargin, layout.baseline);
+  displayDriver.print(layout.text);
 }
 
 uint8_t rgb565Luminance(uint16_t color) {
@@ -276,11 +473,96 @@ bool EpaperDisplay::showPng(const PsramImage &pngImage,
   }
 
   Serial.println("正在将显示帧写入 SSD1677...");
-  displayDriver.writeImageForFullRefresh(
+  displayDriver.epd2.writeImageForFullRefresh(
       frameBuffer_.data(), 0, 0, DisplayConfig::kWidth,
       DisplayConfig::kHeight, false, false, false);
-  displayDriver.refresh(false);
+  displayDriver.epd2.refresh(false);
   displayDriver.hibernate();
   Serial.println("墨水屏刷新完成，已进入深度休眠");
+  return true;
+}
+
+bool EpaperDisplay::showNews(const NewsList &news, size_t firstItemIndex,
+                             size_t maximumItemCount, size_t pageNumber,
+                             size_t pageCount, bool dataValid) {
+  if (!initialized_) {
+    Serial.println("墨水屏尚未初始化");
+    return false;
+  }
+
+  const bool hasVisibleNews = dataValid && firstItemIndex < news.count;
+  size_t visibleItemCount = 0;
+  NewsTitleLayout titleLayouts[AppConfig::kNewsItemsPerPage];
+  NewsNumberLayout numberLayouts[AppConfig::kNewsItemsPerPage];
+  if (hasVisibleNews) {
+    const size_t remainingItemCount = news.count - firstItemIndex;
+    visibleItemCount =
+        remainingItemCount < maximumItemCount ? remainingItemCount
+                                               : maximumItemCount;
+    if (visibleItemCount > AppConfig::kNewsItemsPerPage) {
+      visibleItemCount = AppConfig::kNewsItemsPerPage;
+    }
+    for (size_t visibleIndex = 0; visibleIndex < visibleItemCount;
+         ++visibleIndex) {
+      const size_t itemIndex = firstItemIndex + visibleIndex;
+      const int rowTop = kNewsFirstRowY + visibleIndex * kNewsRowHeight;
+      numberLayouts[visibleIndex] =
+          prepareNewsNumber(itemIndex + 1, rowTop);
+      titleLayouts[visibleIndex] =
+          prepareNewsTitle(news.items[itemIndex].title, rowTop);
+    }
+  }
+
+  Serial.println("正在绘制新闻列表页面...");
+  displayDriver.setRotation(0);
+  displayDriver.setFullWindow();
+  displayDriver.firstPage();
+  do {
+    displayDriver.fillScreen(GxEPD_WHITE);
+    displayDriver.setTextColor(GxEPD_BLACK);
+    displayDriver.setTextWrap(false);
+
+    displayDriver.setFont(&FreeSerifBold18pt7b);
+    displayDriver.setTextSize(1);
+    displayDriver.setCursor(kNewsLeftMargin, 47);
+    displayDriver.print("LATEST NEWS");
+    displayDriver.setFont(&FreeSans9pt7b);
+    displayDriver.setTextSize(1);
+    displayDriver.setCursor(625, 45);
+    displayDriver.print("NEWS  ");
+    displayDriver.print(pageNumber);
+    displayDriver.print('/');
+    displayDriver.print(pageCount);
+    displayDriver.fillRect(kNewsLeftMargin, 67,
+                           DisplayConfig::kWidth - 2 * kNewsLeftMargin, 3,
+                           GxEPD_BLACK);
+
+    if (!hasVisibleNews) {
+      displayDriver.setFont(&FreeSerifBold18pt7b);
+      displayDriver.setTextSize(1);
+      displayDriver.setCursor(226, 235);
+      displayDriver.print("NEWS UNAVAILABLE");
+      displayDriver.setFont(&FreeSans9pt7b);
+      displayDriver.setCursor(275, 272);
+      displayDriver.print("Waiting for the next refresh");
+    } else {
+      for (size_t visibleIndex = 0; visibleIndex < visibleItemCount;
+           ++visibleIndex) {
+        const int rowTop =
+            kNewsFirstRowY + visibleIndex * kNewsRowHeight;
+        drawNewsNumber(numberLayouts[visibleIndex]);
+        drawNewsTitle(titleLayouts[visibleIndex]);
+
+        if (visibleIndex + 1 < visibleItemCount) {
+          displayDriver.drawFastHLine(
+              kNewsLeftMargin, rowTop + kNewsRowHeight - 3,
+              DisplayConfig::kWidth - 2 * kNewsLeftMargin, GxEPD_BLACK);
+        }
+      }
+    }
+  } while (displayDriver.nextPage());
+
+  displayDriver.hibernate();
+  Serial.println("新闻列表页面刷新完成，已进入深度休眠");
   return true;
 }

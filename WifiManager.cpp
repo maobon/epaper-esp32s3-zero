@@ -12,6 +12,8 @@ bool connectWifi() {
   }
 
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(Secrets::kWifiSsid, Secrets::kWifiPassword);
   Serial.print("正在连接 Wi-Fi");
 

@@ -82,6 +82,14 @@ bool EpaperApiClient::fetchImage(const char *imageName,
   return downloadImage(imageName, destination);
 }
 
+bool EpaperApiClient::fetchNews(NewsList &destination) {
+  if (accessToken_.isEmpty()) {
+    Serial.println("尚未登录，无法请求新闻");
+    return false;
+  }
+  return downloadNews(destination);
+}
+
 bool EpaperApiClient::login() {
   SecureClient secureClient;
   HTTPClient http;
@@ -220,5 +228,113 @@ bool EpaperApiClient::downloadImage(const char *imageName,
   Serial.print(" 已存入 PSRAM，大小: ");
   Serial.print(destination.size());
   Serial.println(" 字节");
+  return true;
+}
+
+bool EpaperApiClient::downloadNews(NewsList &destination) {
+  SecureClient secureClient;
+  HTTPClient http;
+  configureTls(secureClient);
+
+  const String newsUrl = String(AppConfig::kNewsUrl) + "?page=1&page_size=" +
+                         String(AppConfig::kNewsItemCount);
+  if (!http.begin(secureClient, newsUrl)) {
+    Serial.println("无法初始化新闻 HTTPS 请求");
+    return false;
+  }
+
+  http.setTimeout(AppConfig::kHttpTimeoutMs);
+  http.addHeader("Authorization", String("Bearer ") + accessToken_);
+  http.addHeader("Accept", "application/json");
+
+  Serial.println("正在请求新闻列表");
+  const int httpCode = http.GET();
+  Serial.print("新闻接口 HTTP 状态码: ");
+  Serial.println(httpCode);
+  if (!isSuccessfulHttpStatus(httpCode)) {
+    if (httpCode < 0) {
+      Serial.print("新闻请求失败: ");
+      Serial.println(http.errorToString(httpCode));
+    } else {
+      Serial.println("新闻接口返回非成功状态码");
+    }
+    http.end();
+    return false;
+  }
+
+  // Read the complete HTTPS body before parsing. Parsing getStream() directly
+  // can see a temporary end-of-stream between TLS records and report
+  // IncompleteInput for the larger, ten-item response.
+  const int contentLength = http.getSize();
+  if (contentLength > 0 &&
+      static_cast<size_t>(contentLength) >
+          AppConfig::kMaxNewsResponseBytes) {
+    Serial.println("新闻响应超过 32 KB 安全限制，拒绝接收");
+    http.end();
+    return false;
+  }
+  const String responseBody = http.getString();
+  http.end();
+  if (responseBody.isEmpty()) {
+    Serial.println("新闻响应内容为空");
+    return false;
+  }
+  if (contentLength > 0 &&
+      responseBody.length() != static_cast<size_t>(contentLength)) {
+    Serial.print("新闻响应接收不完整，预期字节数: ");
+    Serial.print(contentLength);
+    Serial.print("，实际字节数: ");
+    Serial.println(responseBody.length());
+    return false;
+  }
+  if (responseBody.length() > AppConfig::kMaxNewsResponseBytes) {
+    Serial.println("新闻响应超过 32 KB 安全限制，拒绝解析");
+    return false;
+  }
+
+  // The response also contains summaries and image URLs that the e-paper page
+  // does not use. Filtering them while parsing keeps JSON memory usage small.
+  JsonDocument responseFilter;
+  responseFilter["news"][0]["title"] = true;
+  JsonDocument responseJson;
+  const DeserializationError jsonError =
+      deserializeJson(responseJson, responseBody,
+                      DeserializationOption::Filter(responseFilter));
+  if (jsonError) {
+    Serial.print("新闻 JSON 解析失败: ");
+    Serial.println(jsonError.c_str());
+    return false;
+  }
+
+  const JsonArray newsJson = responseJson["news"].as<JsonArray>();
+  if (newsJson.isNull()) {
+    Serial.println("新闻响应中没有有效的 news 数组");
+    return false;
+  }
+
+  NewsList refreshedNews;
+  for (JsonObject itemJson : newsJson) {
+    if (refreshedNews.count >= AppConfig::kNewsItemCount) {
+      break;
+    }
+
+    const char *title = itemJson["title"] | "";
+    if (title[0] == '\0') {
+      continue;
+    }
+
+    NewsItem &item = refreshedNews.items[refreshedNews.count++];
+    item.title = title;
+  }
+
+  if (refreshedNews.count == 0) {
+    Serial.println("新闻列表为空，继续保留旧数据");
+    return false;
+  }
+
+  destination = std::move(refreshedNews);
+  Serial.print("新闻列表已更新，共 ");
+  Serial.print(destination.count);
+  Serial.println(" 条");
   return true;
 }
