@@ -87,7 +87,17 @@ bool EpaperApiClient::fetchNews(NewsList &destination) {
     Serial.println("尚未登录，无法请求新闻");
     return false;
   }
-  return downloadNews(destination);
+  return downloadNews(AppConfig::kNewsUrl, "news", AppConfig::kNewsItemCount,
+                      false, destination);
+}
+
+bool EpaperApiClient::fetchChineseNews(NewsList &destination) {
+  if (accessToken_.isEmpty()) {
+    Serial.println("尚未登录，无法请求中文新闻");
+    return false;
+  }
+  return downloadNews(AppConfig::kChineseNewsUrl, "news_audio",
+                      AppConfig::kChineseNewsItemCount, true, destination);
 }
 
 bool EpaperApiClient::login() {
@@ -231,13 +241,16 @@ bool EpaperApiClient::downloadImage(const char *imageName,
   return true;
 }
 
-bool EpaperApiClient::downloadNews(NewsList &destination) {
+bool EpaperApiClient::downloadNews(const char *url, const char *responseKey,
+                                   size_t maximumItemCount,
+                                   bool includeDuration,
+                                   NewsList &destination) {
   SecureClient secureClient;
   HTTPClient http;
   configureTls(secureClient);
 
-  const String newsUrl = String(AppConfig::kNewsUrl) + "?page=1&page_size=" +
-                         String(AppConfig::kNewsItemCount);
+  const String newsUrl =
+      String(url) + "?page=1&page_size=" + String(maximumItemCount);
   if (!http.begin(secureClient, newsUrl)) {
     Serial.println("无法初始化新闻 HTTPS 请求");
     return false;
@@ -295,8 +308,11 @@ bool EpaperApiClient::downloadNews(NewsList &destination) {
   // Only retain the text rendered by the e-paper news pages. Filtering image
   // URLs and other metadata keeps JSON memory usage small.
   JsonDocument responseFilter;
-  responseFilter["news"][0]["title"] = true;
-  responseFilter["news"][0]["summary"] = true;
+  responseFilter[responseKey][0]["title"] = true;
+  responseFilter[responseKey][0]["summary"] = true;
+  if (includeDuration) {
+    responseFilter[responseKey][0]["duration"] = true;
+  }
   JsonDocument responseJson;
   const DeserializationError jsonError =
       deserializeJson(responseJson, responseBody,
@@ -307,15 +323,17 @@ bool EpaperApiClient::downloadNews(NewsList &destination) {
     return false;
   }
 
-  const JsonArray newsJson = responseJson["news"].as<JsonArray>();
+  const JsonArray newsJson = responseJson[responseKey].as<JsonArray>();
   if (newsJson.isNull()) {
-    Serial.println("新闻响应中没有有效的 news 数组");
+    Serial.print("新闻响应中没有有效的 ");
+    Serial.print(responseKey);
+    Serial.println(" 数组");
     return false;
   }
 
   NewsList refreshedNews;
   for (JsonObject itemJson : newsJson) {
-    if (refreshedNews.count >= AppConfig::kNewsItemCount) {
+    if (refreshedNews.count >= maximumItemCount) {
       break;
     }
 
@@ -327,6 +345,9 @@ bool EpaperApiClient::downloadNews(NewsList &destination) {
     NewsItem &item = refreshedNews.items[refreshedNews.count++];
     item.title = title;
     item.summary = itemJson["summary"] | "";
+    if (includeDuration) {
+      item.duration = itemJson["duration"] | "";
+    }
   }
 
   if (refreshedNews.count == 0) {

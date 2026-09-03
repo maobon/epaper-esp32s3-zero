@@ -3,6 +3,7 @@
 #include <PNGdec.h>
 #include <SPI.h>
 #include <GxEPD2_BW.h>
+#include <U8g2_for_Adafruit_GFX.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
@@ -19,7 +20,41 @@ GxEPD2_BW<GxEPD2_426_GDEQ0426T82, 40>
     displayDriver(GxEPD2_426_GDEQ0426T82(
         DisplayConfig::kChipSelectPin, DisplayConfig::kDataCommandPin,
         DisplayConfig::kResetPin, DisplayConfig::kBusyPin));
+
+class ScaledTextCanvas : public Adafruit_GFX {
+ public:
+  explicit ScaledTextCanvas(Adafruit_GFX &target)
+      : Adafruit_GFX(DisplayConfig::kWidth / 2, DisplayConfig::kHeight / 2),
+        target_(target) {}
+
+  void drawPixel(int16_t x, int16_t y, uint16_t color) override {
+    drawScaledRect(x, y, 1, 1, color);
+  }
+
+  void drawFastHLine(int16_t x, int16_t y, int16_t width,
+                     uint16_t color) override {
+    drawScaledRect(x, y, width, 1, color);
+  }
+
+  void drawFastVLine(int16_t x, int16_t y, int16_t height,
+                     uint16_t color) override {
+    drawScaledRect(x, y, 1, height, color);
+  }
+
+ private:
+  void drawScaledRect(int16_t x, int16_t y, int16_t width, int16_t height,
+                      uint16_t color) {
+    target_.fillRect(x * 2, y * 2, width * 2, height * 2, color);
+  }
+
+  Adafruit_GFX &target_;
+};
+
 PNG pngDecoder;
+U8G2_FOR_ADAFRUIT_GFX unicodeText;
+U8G2_FOR_ADAFRUIT_GFX largeUnicodeText;
+const uint8_t *const kChineseFont = u8g2_font_wqy16_t_gb2312;
+ScaledTextCanvas largeTextCanvas(displayDriver);
 
 // Sensor panel coordinates are expressed in the 480x800 portrait image space.
 // The display buffer itself is 800x480, so pixels are rotated when written.
@@ -36,6 +71,11 @@ constexpr int kNewsTitleWidth =
     DisplayConfig::kWidth - kNewsTitleX - kNewsLeftMargin;
 constexpr int kNewsTextTopPadding = 6;
 constexpr int kNewsSummaryGap = 32;
+constexpr int kChineseNewsRowHeight = 78;
+constexpr int kChineseScale = 2;
+constexpr int kChineseTitleLineAdvance = 42;
+constexpr int kChineseBulletX = kNewsLeftMargin - 12;
+constexpr int kChineseBulletRadius = 4;
 static_assert(kSensorPanelX + kSensorPanelWidth <= DisplayConfig::kHeight);
 static_assert(kSensorPanelY + kSensorPanelHeight <= DisplayConfig::kWidth);
 
@@ -361,6 +401,130 @@ void drawNewsSummary(const NewsSummaryLayout &layout) {
   }
 }
 
+size_t utf8CharacterLength(const String &text, size_t offset) {
+  const uint8_t firstByte = static_cast<uint8_t>(text[offset]);
+  if ((firstByte & 0x80) == 0) {
+    return 1;
+  }
+  if ((firstByte & 0xE0) == 0xC0) {
+    return 2;
+  }
+  if ((firstByte & 0xF0) == 0xE0) {
+    return 3;
+  }
+  return 4;
+}
+
+uint16_t chineseTextWidth(const String &text) {
+  return largeUnicodeText.getUTF8Width(text.c_str());
+}
+
+String takeChineseWrappedLine(const String &text, size_t &offset,
+                              uint16_t maximumWidth) {
+  while (offset < text.length() && text[offset] == ' ') {
+    ++offset;
+  }
+  if (offset >= text.length()) {
+    return String();
+  }
+
+  const size_t lineStart = offset;
+  size_t lastSpace = SIZE_MAX;
+  for (size_t index = lineStart; index < text.length();) {
+    const size_t characterLength = utf8CharacterLength(text, index);
+    const size_t characterEnd =
+        index + characterLength <= text.length() ? index + characterLength
+                                                  : text.length();
+    if (text[index] == ' ') {
+      lastSpace = index;
+    }
+    if (chineseTextWidth(text.substring(lineStart, characterEnd)) >
+        maximumWidth) {
+      size_t lineEnd = lastSpace != SIZE_MAX && lastSpace > lineStart
+                           ? lastSpace
+                           : index;
+      if (lineEnd == lineStart) {
+        lineEnd = characterEnd;
+      }
+      String line = text.substring(lineStart, lineEnd);
+      line.trim();
+      offset = lineEnd;
+      return line;
+    }
+    index = characterEnd;
+  }
+
+  String line = text.substring(lineStart);
+  line.trim();
+  offset = text.length();
+  return line;
+}
+
+void removeLastUtf8Character(String &text) {
+  if (text.isEmpty()) {
+    return;
+  }
+  size_t characterStart = text.length() - 1;
+  while (characterStart > 0 &&
+         (static_cast<uint8_t>(text[characterStart]) & 0xC0) == 0x80) {
+    --characterStart;
+  }
+  text.remove(characterStart);
+}
+
+void addChineseEllipsis(String &line, uint16_t maximumWidth) {
+  while (!line.isEmpty() && chineseTextWidth(line + "...") > maximumWidth) {
+    removeLastUtf8Character(line);
+  }
+  line.trim();
+  line += "...";
+}
+
+struct ChineseNewsLayout {
+  String titleLines[2];
+  int titleFirstBaseline = 0;
+};
+
+ChineseNewsLayout prepareChineseNewsItem(const NewsItem &item, int rowTop) {
+  ChineseNewsLayout layout;
+  largeUnicodeText.setFont(kChineseFont);
+
+  size_t titleOffset = 0;
+  layout.titleLines[0] =
+      takeChineseWrappedLine(item.title, titleOffset,
+                             kNewsTitleWidth / kChineseScale);
+  layout.titleLines[1] =
+      takeChineseWrappedLine(item.title, titleOffset,
+                             kNewsTitleWidth / kChineseScale);
+  if (titleOffset < item.title.length()) {
+    addChineseEllipsis(layout.titleLines[1], kNewsTitleWidth / kChineseScale);
+  }
+
+  const int titleLineCount = layout.titleLines[1].isEmpty() ? 1 : 2;
+  const int titleBlockHeight =
+      titleLineCount == 1 ? 32 : kChineseTitleLineAdvance + 32;
+  layout.titleFirstBaseline =
+      rowTop + (kChineseNewsRowHeight - titleBlockHeight) / 2 + 27;
+  return layout;
+}
+
+void drawChineseNewsItem(const ChineseNewsLayout &layout) {
+  largeUnicodeText.setFont(kChineseFont);
+  const int bulletY = layout.titleFirstBaseline - 9;
+  displayDriver.fillCircle(kChineseBulletX, bulletY, kChineseBulletRadius,
+                           GxEPD_BLACK);
+  for (size_t index = 0; index < 2; ++index) {
+    if (!layout.titleLines[index].isEmpty()) {
+      largeUnicodeText.drawUTF8(
+          kNewsTitleX / kChineseScale,
+          (layout.titleFirstBaseline +
+           static_cast<int>(index) * kChineseTitleLineAdvance) /
+              kChineseScale,
+          layout.titleLines[index].c_str());
+    }
+  }
+}
+
 uint8_t rgb565Luminance(uint16_t color) {
   const uint16_t red = ((color >> 11) & 0x1F) * 255 / 31;
   const uint16_t green = ((color >> 5) & 0x3F) * 255 / 63;
@@ -463,6 +627,16 @@ bool EpaperDisplay::begin() {
   SPI.begin(DisplayConfig::kClockPin, DisplayConfig::kMisoPin,
             DisplayConfig::kMosiPin, DisplayConfig::kChipSelectPin);
   displayDriver.init(0, true, 10, false);
+  unicodeText.begin(displayDriver);
+  unicodeText.setFontMode(1);
+  unicodeText.setFontDirection(0);
+  unicodeText.setForegroundColor(GxEPD_BLACK);
+  unicodeText.setBackgroundColor(GxEPD_WHITE);
+  largeUnicodeText.begin(largeTextCanvas);
+  largeUnicodeText.setFontMode(1);
+  largeUnicodeText.setFontDirection(0);
+  largeUnicodeText.setForegroundColor(GxEPD_BLACK);
+  largeUnicodeText.setBackgroundColor(GxEPD_WHITE);
   initialized_ = true;
   Serial.println("墨水屏 SPI 驱动已初始化");
   return true;
@@ -556,7 +730,7 @@ bool EpaperDisplay::showNews(const NewsList &news, size_t firstItemIndex,
     displayDriver.setFont(&FreeSerifBold18pt7b);
     displayDriver.setTextSize(1);
     displayDriver.setCursor(kNewsLeftMargin, 47);
-    displayDriver.print("LATEST NEWS");
+    displayDriver.print("New York Times");
     displayDriver.setFont(&FreeSans9pt7b);
     displayDriver.setTextSize(1);
     displayDriver.setCursor(625, 45);
@@ -587,5 +761,75 @@ bool EpaperDisplay::showNews(const NewsList &news, size_t firstItemIndex,
 
   displayDriver.hibernate();
   Serial.println("新闻列表页面刷新完成，已进入深度休眠");
+  return true;
+}
+
+bool EpaperDisplay::showChineseNews(const NewsList &news,
+                                    size_t firstItemIndex,
+                                    size_t maximumItemCount,
+                                    size_t pageNumber, size_t pageCount,
+                                    bool dataValid) {
+  if (!initialized_) {
+    Serial.println("墨水屏尚未初始化");
+    return false;
+  }
+
+  const bool hasVisibleNews = dataValid && firstItemIndex < news.count;
+  size_t visibleItemCount = 0;
+  ChineseNewsLayout layouts[AppConfig::kChineseNewsItemsPerPage];
+  if (hasVisibleNews) {
+    const size_t remainingItemCount = news.count - firstItemIndex;
+    visibleItemCount = remainingItemCount < maximumItemCount
+                           ? remainingItemCount
+                           : maximumItemCount;
+    if (visibleItemCount > AppConfig::kChineseNewsItemsPerPage) {
+      visibleItemCount = AppConfig::kChineseNewsItemsPerPage;
+    }
+    for (size_t visibleIndex = 0; visibleIndex < visibleItemCount;
+         ++visibleIndex) {
+      layouts[visibleIndex] = prepareChineseNewsItem(
+          news.items[firstItemIndex + visibleIndex],
+          kNewsFirstRowY + visibleIndex * kChineseNewsRowHeight);
+    }
+  }
+
+  Serial.println("正在绘制中文新闻列表页面...");
+  displayDriver.setRotation(0);
+  displayDriver.setFullWindow();
+  displayDriver.firstPage();
+  do {
+    displayDriver.fillScreen(GxEPD_WHITE);
+    largeUnicodeText.setFont(kChineseFont);
+    largeUnicodeText.drawUTF8(kNewsLeftMargin / kChineseScale,
+                              45 / kChineseScale, "NHK Latest News");
+
+    String pageLabel = String(pageNumber) + '/' + pageCount;
+    const int pageLabelX =
+        DisplayConfig::kWidth - kNewsLeftMargin -
+        largeUnicodeText.getUTF8Width(pageLabel.c_str()) * kChineseScale;
+    largeUnicodeText.drawUTF8(pageLabelX / kChineseScale,
+                              45 / kChineseScale, pageLabel.c_str());
+    displayDriver.fillRect(kNewsLeftMargin, 67,
+                           DisplayConfig::kWidth - 2 * kNewsLeftMargin, 3,
+                           GxEPD_BLACK);
+
+    if (!hasVisibleNews) {
+      const char *message = "中文新闻暂不可用，等待下次刷新";
+      const int messageX =
+          (DisplayConfig::kWidth -
+           largeUnicodeText.getUTF8Width(message) * kChineseScale) /
+          2;
+      largeUnicodeText.drawUTF8(messageX / kChineseScale,
+                                245 / kChineseScale, message);
+    } else {
+      for (size_t visibleIndex = 0; visibleIndex < visibleItemCount;
+           ++visibleIndex) {
+        drawChineseNewsItem(layouts[visibleIndex]);
+      }
+    }
+  } while (displayDriver.nextPage());
+
+  displayDriver.hibernate();
+  Serial.println("中文新闻列表页面刷新完成，已进入深度休眠");
   return true;
 }

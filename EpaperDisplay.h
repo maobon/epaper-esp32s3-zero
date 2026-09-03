@@ -12,6 +12,9 @@ class EpaperDisplay {
   bool showNews(const NewsList &news, size_t firstItemIndex,
                 size_t maximumItemCount, size_t pageNumber,
                 size_t pageCount, bool dataValid);
+  bool showChineseNews(const NewsList &news, size_t firstItemIndex,
+                       size_t maximumItemCount, size_t pageNumber,
+                       size_t pageCount, bool dataValid);
 
  private:
   bool initialized_ = false;

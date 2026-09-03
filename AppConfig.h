@@ -8,6 +8,8 @@ inline constexpr char kLoginUrl[] = "https://api.maobon.site/login";
 inline constexpr char kEpaperBaseUrl[] =
     "https://api.maobon.site/api/epaper/";
 inline constexpr char kNewsUrl[] = "https://api.maobon.site/api/news";
+inline constexpr char kChineseNewsUrl[] =
+    "https://api.maobon.site/api/news-audio";
 inline constexpr const char *kImageNames[] = {
     "currency", "landscape", "forecast", "portrait"};
 inline constexpr size_t kImageCount =
@@ -17,12 +19,28 @@ inline constexpr size_t kNewsPageCount = 4;
 inline constexpr size_t kNewsItemsPerPage = 3;
 inline constexpr size_t kNewsItemCount =
     kNewsPageCount * kNewsItemsPerPage;
-inline constexpr size_t kInterfaceCount = kImageCount + 1;
-inline constexpr size_t kPageCount = kImageCount + kNewsPageCount;
+inline constexpr size_t kChineseNewsPageIndex =
+    kNewsPageIndex + kNewsPageCount;
+inline constexpr size_t kChineseNewsPageCount = 2;
+inline constexpr size_t kChineseNewsItemsPerPage = 5;
+inline constexpr size_t kChineseNewsItemCount = 10;
+inline constexpr size_t kNewsStorageCount =
+    kNewsItemCount > kChineseNewsItemCount ? kNewsItemCount
+                                           : kChineseNewsItemCount;
+inline constexpr size_t kInterfaceCount = kImageCount + 2;
+inline constexpr size_t kPageCount =
+    kImageCount + kNewsPageCount + kChineseNewsPageCount;
 static_assert(kNewsPageCount > 0 && kNewsItemsPerPage > 0,
               "News pagination must not be empty");
 static_assert(kNewsItemCount <= 100,
               "News API accepts at most 100 items per request");
+static_assert(kChineseNewsPageCount > 0 && kChineseNewsItemsPerPage > 0,
+              "Chinese news pagination must not be empty");
+static_assert(kChineseNewsItemCount <=
+                  kChineseNewsPageCount * kChineseNewsItemsPerPage,
+              "Chinese news pages must hold every requested item");
+static_assert(kChineseNewsItemCount <= 100,
+              "Chinese news API accepts at most 100 items per request");
 inline constexpr size_t kForecastPageIndex = 2;
 static_assert(kForecastPageIndex < kImageCount,
               "Forecast page index must refer to an image");
@@ -40,8 +58,12 @@ inline constexpr uint32_t kInterfaceDisplayDurationMs =
     8UL * 60UL * 1000UL;
 inline constexpr uint32_t kNewsPageDisplayDurationMs =
     kInterfaceDisplayDurationMs / kNewsPageCount;
+inline constexpr uint32_t kChineseNewsPageDisplayDurationMs =
+    kInterfaceDisplayDurationMs / kChineseNewsPageCount;
 static_assert(kInterfaceDisplayDurationMs % kNewsPageCount == 0,
               "News pages must divide the interface duration evenly");
+static_assert(kInterfaceDisplayDurationMs % kChineseNewsPageCount == 0,
+              "Chinese news pages must divide the interface duration evenly");
 inline constexpr uint32_t kPageDisplayRetryIntervalMs = 30UL * 1000UL;
 inline constexpr bool kSht41Enabled = false;
 inline constexpr uint32_t kSensorReadIntervalMs = 30000;

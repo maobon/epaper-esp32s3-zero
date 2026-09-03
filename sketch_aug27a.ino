@@ -17,6 +17,7 @@ EpaperApiClient epaperApi;
 EpaperDisplay epaperDisplay;
 Sht41Sensor sht41Sensor;
 NewsList latestNews;
+NewsList latestChineseNews;
 
 size_t currentPageIndex = 0;
 uint32_t lastPageChangeMs = 0;
@@ -35,20 +36,23 @@ bool sht41Ready = false;
 bool networkTimeReady = false;
 bool sensorDataValid = false;
 bool newsDataValid = false;
+bool chineseNewsDataValid = false;
 bool pendingNewsRefresh = false;
+bool pendingChineseNewsRefresh = false;
 bool pendingImageRefresh[AppConfig::kImageCount] = {};
 float latestTemperatureCelsius = 0.0F;
 float latestRelativeHumidity = 0.0F;
 
 void markAllContentForRefresh() {
   pendingNewsRefresh = true;
+  pendingChineseNewsRefresh = true;
   for (size_t index = 0; index < AppConfig::kImageCount; ++index) {
     pendingImageRefresh[index] = true;
   }
 }
 
 bool hasPendingContentRefresh() {
-  if (pendingNewsRefresh) {
+  if (pendingNewsRefresh || pendingChineseNewsRefresh) {
     return true;
   }
   for (size_t index = 0; index < AppConfig::kImageCount; ++index) {
@@ -138,29 +142,48 @@ bool showPage(size_t pageIndex) {
   const bool isNewsPage =
       pageIndex >= AppConfig::kNewsPageIndex &&
       pageIndex < AppConfig::kNewsPageIndex + AppConfig::kNewsPageCount;
+  const bool isChineseNewsPage =
+      pageIndex >= AppConfig::kChineseNewsPageIndex &&
+      pageIndex < AppConfig::kChineseNewsPageIndex +
+                      AppConfig::kChineseNewsPageCount;
   if (isNewsPage) {
     Serial.print("news ");
     Serial.print(pageIndex - AppConfig::kNewsPageIndex + 1);
     Serial.print('/');
     Serial.println(AppConfig::kNewsPageCount);
+  } else if (isChineseNewsPage) {
+    Serial.print("chinese news ");
+    Serial.print(pageIndex - AppConfig::kChineseNewsPageIndex + 1);
+    Serial.print('/');
+    Serial.println(AppConfig::kChineseNewsPageCount);
   } else {
     Serial.println(AppConfig::kImageNames[pageIndex]);
   }
   lastPageDisplayAttemptMs = millis();
 
-  const bool displaySucceeded =
-      isNewsPage
-          ? epaperDisplay.showNews(
-                latestNews,
-                (pageIndex - AppConfig::kNewsPageIndex) *
-                    AppConfig::kNewsItemsPerPage,
-                AppConfig::kNewsItemsPerPage,
-                pageIndex - AppConfig::kNewsPageIndex + 1,
-                AppConfig::kNewsPageCount, newsDataValid)
-          : epaperDisplay.showPng(
-                downloadedImages[pageIndex], latestTemperatureCelsius,
-                latestRelativeHumidity,
-                pageIndex == AppConfig::kForecastPageIndex, sensorDataValid);
+  bool displaySucceeded = false;
+  if (isNewsPage) {
+    displaySucceeded = epaperDisplay.showNews(
+        latestNews,
+        (pageIndex - AppConfig::kNewsPageIndex) *
+            AppConfig::kNewsItemsPerPage,
+        AppConfig::kNewsItemsPerPage,
+        pageIndex - AppConfig::kNewsPageIndex + 1,
+        AppConfig::kNewsPageCount, newsDataValid);
+  } else if (isChineseNewsPage) {
+    displaySucceeded = epaperDisplay.showChineseNews(
+        latestChineseNews,
+        (pageIndex - AppConfig::kChineseNewsPageIndex) *
+            AppConfig::kChineseNewsItemsPerPage,
+        AppConfig::kChineseNewsItemsPerPage,
+        pageIndex - AppConfig::kChineseNewsPageIndex + 1,
+        AppConfig::kChineseNewsPageCount, chineseNewsDataValid);
+  } else {
+    displaySucceeded = epaperDisplay.showPng(
+        downloadedImages[pageIndex], latestTemperatureCelsius,
+        latestRelativeHumidity,
+        pageIndex == AppConfig::kForecastPageIndex, sensorDataValid);
+  }
   if (!displaySucceeded) {
     Serial.println("页面显示失败");
     pageDisplayRetryPending = true;
@@ -186,8 +209,15 @@ uint32_t currentPageDisplayDurationMs() {
       currentPageIndex >= AppConfig::kNewsPageIndex &&
       currentPageIndex <
           AppConfig::kNewsPageIndex + AppConfig::kNewsPageCount;
-  return isNewsPage ? AppConfig::kNewsPageDisplayDurationMs
-                    : AppConfig::kInterfaceDisplayDurationMs;
+  if (isNewsPage) {
+    return AppConfig::kNewsPageDisplayDurationMs;
+  }
+  const bool isChineseNewsPage =
+      currentPageIndex >= AppConfig::kChineseNewsPageIndex &&
+      currentPageIndex < AppConfig::kChineseNewsPageIndex +
+                             AppConfig::kChineseNewsPageCount;
+  return isChineseNewsPage ? AppConfig::kChineseNewsPageDisplayDurationMs
+                           : AppConfig::kInterfaceDisplayDurationMs;
 }
 
 bool refreshContent() {
@@ -211,6 +241,15 @@ bool refreshContent() {
       pendingNewsRefresh = false;
     } else {
       Serial.println("新闻更新失败，继续保留旧数据");
+    }
+  }
+
+  if (pendingChineseNewsRefresh) {
+    if (epaperApi.fetchChineseNews(latestChineseNews)) {
+      chineseNewsDataValid = true;
+      pendingChineseNewsRefresh = false;
+    } else {
+      Serial.println("中文新闻更新失败，继续保留旧数据");
     }
   }
 
@@ -239,7 +278,7 @@ bool refreshContent() {
   }
 
   if (!hasPendingContentRefresh()) {
-    Serial.print("新闻与 ");
+    Serial.print("中英文新闻与 ");
     Serial.print(AppConfig::kImageCount);
     Serial.println(" 张图片已全部更新");
   }

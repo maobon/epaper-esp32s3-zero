@@ -10,11 +10,14 @@ class EpaperApiClient {
   bool authenticate();
   bool fetchImage(const char *imageName, PsramImage &destination);
   bool fetchNews(NewsList &destination);
+  bool fetchChineseNews(NewsList &destination);
 
  private:
   bool login();
   bool downloadImage(const char *imageName, PsramImage &destination);
-  bool downloadNews(NewsList &destination);
+  bool downloadNews(const char *url, const char *responseKey,
+                    size_t maximumItemCount, bool includeDuration,
+                    NewsList &destination);
 
   String accessToken_;
 };
