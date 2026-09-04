@@ -799,10 +799,12 @@ bool EpaperDisplay::showChineseNews(const NewsList &news,
   displayDriver.firstPage();
   do {
     displayDriver.fillScreen(GxEPD_WHITE);
-    largeUnicodeText.setFont(kChineseFont);
-    largeUnicodeText.drawUTF8(kNewsLeftMargin / kChineseScale,
-                              45 / kChineseScale, "NHK Latest News");
+    displayDriver.setFont(&FreeSerifBold18pt7b);
+    displayDriver.setTextSize(1);
+    displayDriver.setCursor(kNewsLeftMargin, 47);
+    displayDriver.print("NHK Latest News");
 
+    largeUnicodeText.setFont(kChineseFont);
     String pageLabel = String(pageNumber) + '/' + pageCount;
     const int pageLabelX =
         DisplayConfig::kWidth - kNewsLeftMargin -
