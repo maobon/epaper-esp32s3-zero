@@ -85,6 +85,7 @@ struct DecodeContext {
   int sourceHeight;
   bool rotateClockwise;
   uint16_t rgbLine[DisplayConfig::kWidth];
+  int decodedRows = 0;
 };
 
 const uint8_t *glyphFor(char character) {
@@ -560,11 +561,15 @@ int decodePngLine(PNGDRAW *draw) {
           static_cast<uint8_t>(~(0x80U >> (destinationX & 7)));
     }
   }
+  ++context->decodedRows;
   return 1;
 }
 
 bool decodePngToMonochrome(const PsramImage &pngImage,
                            PsramImage &frameBuffer) {
+  if (pngImage.data() == nullptr || pngImage.size() == 0) {
+    return false;
+  }
   const int openResult =
       pngDecoder.openRAM(const_cast<uint8_t *>(pngImage.data()),
                          static_cast<int>(pngImage.size()), decodePngLine);
@@ -607,10 +612,11 @@ bool decodePngToMonochrome(const PsramImage &pngImage,
 
   DecodeContext context = {
       &frameBuffer, sourceWidth, sourceHeight, isPortrait, {0}};
-  const int decodeResult = pngDecoder.decode(&context, PNG_FAST_PALETTE);
+  const int decodeResult =
+      pngDecoder.decode(&context, PNG_FAST_PALETTE | PNG_CHECK_CRC);
   pngDecoder.close();
 
-  if (decodeResult != PNG_SUCCESS) {
+  if (decodeResult != PNG_SUCCESS || context.decodedRows != sourceHeight) {
     Serial.print("PNG 解码失败，错误码: ");
     Serial.println(decodeResult);
     frameBuffer.setSize(0);
@@ -638,11 +644,24 @@ bool EpaperDisplay::begin() {
   largeUnicodeText.setForegroundColor(GxEPD_BLACK);
   largeUnicodeText.setBackgroundColor(GxEPD_WHITE);
   initialized_ = true;
+  // Downloads may take a long time or fail; do not leave the controller awake
+  // while waiting for the first frame. GxEPD2 resets it on the next draw.
+  displayDriver.hibernate();
   Serial.println("墨水屏 SPI 驱动已初始化");
   return true;
 }
 
-bool EpaperDisplay::showPng(const PsramImage &pngImage,
+bool EpaperDisplay::prepareFrame(const PsramImage &pngImage,
+                                 PsramImage &destination) {
+  PsramImage decoded;
+  if (!decodePngToMonochrome(pngImage, decoded)) {
+    return false;
+  }
+  destination.swap(decoded);
+  return true;
+}
+
+bool EpaperDisplay::showFrame(const PsramImage &image,
                             float temperatureCelsius,
                             float relativeHumidity,
                             bool showSensorPanel,
@@ -652,18 +671,27 @@ bool EpaperDisplay::showPng(const PsramImage &pngImage,
     return false;
   }
 
-  if (!decodePngToMonochrome(pngImage, frameBuffer_)) {
+  if (image.data() == nullptr ||
+      image.size() != DisplayConfig::kFrameBufferSize) {
     return false;
   }
 
+  const uint8_t *pixels = image.data();
   if (showSensorPanel) {
+    if (frameBuffer_.capacity() < DisplayConfig::kFrameBufferSize &&
+        !frameBuffer_.allocate(DisplayConfig::kFrameBufferSize)) {
+      return false;
+    }
+    memcpy(frameBuffer_.data(), image.data(), image.size());
+    frameBuffer_.setSize(image.size());
     drawSensorPanel(frameBuffer_, temperatureCelsius, relativeHumidity,
                     sensorDataValid);
+    pixels = frameBuffer_.data();
   }
 
   Serial.println("正在将显示帧写入 SSD1677...");
   displayDriver.epd2.writeImageForFullRefresh(
-      frameBuffer_.data(), 0, 0, DisplayConfig::kWidth,
+      pixels, 0, 0, DisplayConfig::kWidth,
       DisplayConfig::kHeight, false, false, false);
   displayDriver.epd2.refresh(false);
   displayDriver.hibernate();

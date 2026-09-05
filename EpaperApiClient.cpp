@@ -7,6 +7,8 @@
 
 #include "AppConfig.h"
 #include "Secrets.h"
+#include "PsramImageWriteStream.h"
+#include "WifiManager.h"
 
 namespace {
 
@@ -19,52 +21,30 @@ bool isSuccessfulHttpStatus(int statusCode) {
 void configureTls(SecureClient &client) {
   // 正式环境应改为 setCACert() 并配置可信 CA。
   client.setInsecure();
+  client.setHandshakeTimeout(AppConfig::kTlsHandshakeTimeoutSeconds);
 }
 
-class PsramImageWriteStream : public Stream {
- public:
-  PsramImageWriteStream(PsramImage &image, size_t maximumSize)
-      : image_(image), maximumSize_(maximumSize) {}
-
-  size_t write(uint8_t value) override {
-    return write(&value, 1);
+bool readBoundedResponse(HTTPClient &http, PsramImage &body, size_t limit) {
+  const int expected = http.getSize();
+  if (expected > 0 && static_cast<size_t>(expected) > limit) {
+    Serial.println("HTTP 响应超过大小限制");
+    return false;
   }
-
-  size_t write(const uint8_t *buffer, size_t size) override {
-    const size_t required = bytesWritten_ + size;
-    if (required < bytesWritten_ || required > maximumSize_ ||
-        !image_.ensureCapacity(required, maximumSize_)) {
-      return 0;
-    }
-
-    memcpy(image_.data() + bytesWritten_, buffer, size);
-    bytesWritten_ = required;
-    return size;
+  const size_t capacity = expected > 0 ? static_cast<size_t>(expected)
+                                      : min(limit, size_t(1024));
+  if (!body.allocate(capacity)) {
+    return false;
   }
-
-  int available() override {
-    return 0;
+  PsramImageWriteStream stream(body, limit);
+  const int received = http.writeToStream(&stream);
+  if (received <= 0 || stream.bytesWritten() != static_cast<size_t>(received) ||
+      (expected > 0 && received != expected)) {
+    Serial.println("HTTP 响应不完整、超限或内存不足");
+    return false;
   }
-
-  int read() override {
-    return -1;
-  }
-
-  int peek() override {
-    return -1;
-  }
-
-  void flush() override {}
-
-  size_t bytesWritten() const {
-    return bytesWritten_;
-  }
-
- private:
-  PsramImage &image_;
-  const size_t maximumSize_;
-  size_t bytesWritten_ = 0;
-};
+  body.setSize(stream.bytesWritten());
+  return true;
+}
 
 }  // namespace
 
@@ -101,6 +81,7 @@ bool EpaperApiClient::fetchChineseNews(NewsList &destination) {
 }
 
 bool EpaperApiClient::login() {
+  if (!networkRequestsAllowed()) return false;
   SecureClient secureClient;
   HTTPClient http;
   configureTls(secureClient);
@@ -111,6 +92,7 @@ bool EpaperApiClient::login() {
   }
 
   http.setTimeout(AppConfig::kHttpTimeoutMs);
+  http.setConnectTimeout(AppConfig::kHttpConnectTimeoutMs);
   http.addHeader("Content-Type", "application/json");
 
   JsonDocument requestJson;
@@ -134,12 +116,18 @@ bool EpaperApiClient::login() {
     return false;
   }
 
-  const String response = http.getString();
+  PsramImage response;
+  const bool responseOk =
+      readBoundedResponse(http, response, AppConfig::kMaxLoginResponseBytes);
   http.end();
+  if (!responseOk) {
+    return false;
+  }
 
   JsonDocument responseJson;
   const DeserializationError jsonError =
-      deserializeJson(responseJson, response);
+      deserializeJson(responseJson, static_cast<const uint8_t *>(response.data()),
+                      response.size());
   if (jsonError) {
     Serial.print("JSON 解析失败: ");
     Serial.println(jsonError.c_str());
@@ -157,6 +145,7 @@ bool EpaperApiClient::login() {
 
 bool EpaperApiClient::downloadImage(const char *imageName,
                                     PsramImage &destination) {
+  if (!networkRequestsAllowed()) return false;
   if (!psramFound()) {
     Serial.println("未检测到 PSRAM，请检查开发板的 PSRAM 设置");
     return false;
@@ -173,6 +162,7 @@ bool EpaperApiClient::downloadImage(const char *imageName,
   }
 
   http.setTimeout(AppConfig::kHttpTimeoutMs);
+  http.setConnectTimeout(AppConfig::kHttpConnectTimeoutMs);
   http.addHeader("Authorization", String("Bearer ") + accessToken_);
   http.addHeader("Accept", "image/png");
 
@@ -245,6 +235,7 @@ bool EpaperApiClient::downloadNews(const char *url, const char *responseKey,
                                    size_t maximumItemCount,
                                    bool includeDuration,
                                    NewsList &destination) {
+  if (!networkRequestsAllowed()) return false;
   SecureClient secureClient;
   HTTPClient http;
   configureTls(secureClient);
@@ -257,6 +248,7 @@ bool EpaperApiClient::downloadNews(const char *url, const char *responseKey,
   }
 
   http.setTimeout(AppConfig::kHttpTimeoutMs);
+  http.setConnectTimeout(AppConfig::kHttpConnectTimeoutMs);
   http.addHeader("Authorization", String("Bearer ") + accessToken_);
   http.addHeader("Accept", "application/json");
 
@@ -275,33 +267,12 @@ bool EpaperApiClient::downloadNews(const char *url, const char *responseKey,
     return false;
   }
 
-  // Read the complete HTTPS body before parsing. Parsing getStream() directly
-  // can see a temporary end-of-stream between TLS records and report
-  // IncompleteInput for the larger, ten-item response.
-  const int contentLength = http.getSize();
-  if (contentLength > 0 &&
-      static_cast<size_t>(contentLength) >
-          AppConfig::kMaxNewsResponseBytes) {
-    Serial.println("新闻响应超过 32 KB 安全限制，拒绝接收");
-    http.end();
-    return false;
-  }
-  const String responseBody = http.getString();
+  // HTTPClient handles chunk framing; the sink enforces the limit while reading.
+  PsramImage responseBody;
+  const bool responseOk =
+      readBoundedResponse(http, responseBody, AppConfig::kMaxNewsResponseBytes);
   http.end();
-  if (responseBody.isEmpty()) {
-    Serial.println("新闻响应内容为空");
-    return false;
-  }
-  if (contentLength > 0 &&
-      responseBody.length() != static_cast<size_t>(contentLength)) {
-    Serial.print("新闻响应接收不完整，预期字节数: ");
-    Serial.print(contentLength);
-    Serial.print("，实际字节数: ");
-    Serial.println(responseBody.length());
-    return false;
-  }
-  if (responseBody.length() > AppConfig::kMaxNewsResponseBytes) {
-    Serial.println("新闻响应超过 32 KB 安全限制，拒绝解析");
+  if (!responseOk) {
     return false;
   }
 
@@ -315,7 +286,9 @@ bool EpaperApiClient::downloadNews(const char *url, const char *responseKey,
   }
   JsonDocument responseJson;
   const DeserializationError jsonError =
-      deserializeJson(responseJson, responseBody,
+      deserializeJson(responseJson,
+                      static_cast<const uint8_t *>(responseBody.data()),
+                      responseBody.size(),
                       DeserializationOption::Filter(responseFilter));
   if (jsonError) {
     Serial.print("新闻 JSON 解析失败: ");
@@ -333,7 +306,8 @@ bool EpaperApiClient::downloadNews(const char *url, const char *responseKey,
 
   NewsList refreshedNews;
   for (JsonObject itemJson : newsJson) {
-    if (refreshedNews.count >= maximumItemCount) {
+    if (refreshedNews.count >= maximumItemCount ||
+        refreshedNews.count >= AppConfig::kNewsStorageCount) {
       break;
     }
 

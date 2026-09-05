@@ -5,14 +5,19 @@
 #include "AppConfig.h"
 #include "EpaperApiClient.h"
 #include "EpaperDisplay.h"
-#include "ImageInspector.h"
 #include "PsramImage.h"
 #include "Sht41Sensor.h"
 #include "WifiManager.h"
 
 #include <time.h>
+#include <esp_sleep.h>
+#include <esp32-hal-rgb-led.h>
+#include <esp32-hal-rmt.h>
+#include "SleepSchedule.h"
+#include "PageSelection.h"
+#include "PageHours.h"
 
-PsramImage downloadedImages[AppConfig::kImageCount];
+PsramImage cachedFrames[AppConfig::kImageCount];
 EpaperApiClient epaperApi;
 EpaperDisplay epaperDisplay;
 Sht41Sensor sht41Sensor;
@@ -30,7 +35,6 @@ uint32_t lastTimeSyncAttemptMs = 0;
 bool displayReady = false;
 bool slideshowReady = false;
 bool initialPreviewActive = false;
-size_t initialPreviewPagesShown = 0;
 bool pageDisplayRetryPending = false;
 bool sht41Ready = false;
 bool networkTimeReady = false;
@@ -63,9 +67,39 @@ bool hasPendingContentRefresh() {
   return false;
 }
 
+bool isPageReady(size_t page) {
+  if (page < AppConfig::kImageCount) {
+    return cachedFrames[page].size() != 0;
+  }
+  if (page < AppConfig::kChineseNewsPageIndex) {
+    return newsDataValid &&
+        (page - AppConfig::kNewsPageIndex) * AppConfig::kNewsItemsPerPage <
+            latestNews.count;
+  }
+  return page < AppConfig::kPageCount && chineseNewsDataValid &&
+      (page - AppConfig::kChineseNewsPageIndex) *
+          AppConfig::kChineseNewsItemsPerPage < latestChineseNews.count;
+}
+
+uint32_t nextContentAttemptWaitMs(uint32_t now) {
+  return contentWaitMs(now, lastContentRefreshMs, lastContentRefreshAttemptMs,
+      AppConfig::kContentRefreshIntervalMs,
+      AppConfig::kContentRefreshRetryIntervalMs, hasPendingContentRefresh(),
+      wifiRetryRemainingMs(now));
+}
+
+uint32_t nextSlideshowAttemptWaitMs(uint32_t now) {
+  const uint32_t waitMs = remainingUntil(now, lastSlideshowAttemptMs,
+                                        AppConfig::kSlideshowRetryIntervalMs);
+  return displayReady ? max(waitMs, wifiRetryRemainingMs(now)) : waitMs;
+}
+
 bool syncNetworkTime() {
+  WifiSession wifiSession;
   lastTimeSyncAttemptMs = millis();
-  if (!connectWifi()) {
+  if (!connectWifi(true)) {
+    finishTimeSync();
+    lastTimeSyncAttemptMs = millis();
     return false;
   }
 
@@ -73,8 +107,11 @@ bool syncNetworkTime() {
                AppConfig::kSecondaryNtpServer);
 
   tm localTime = {};
-  if (!getLocalTime(&localTime, AppConfig::kTimeSyncTimeoutMs)) {
-    Serial.println("NTP 网络校时失败，将在 60 秒后重试");
+  const bool synced = getLocalTime(&localTime, AppConfig::kTimeSyncTimeoutMs);
+  finishTimeSync();
+  lastTimeSyncAttemptMs = millis();
+  if (!synced) {
+    Serial.println("NTP 校时失败，继续执行禁网策略；无有效时间时需重启再校时");
     return false;
   }
 
@@ -179,10 +216,11 @@ bool showPage(size_t pageIndex) {
         pageIndex - AppConfig::kChineseNewsPageIndex + 1,
         AppConfig::kChineseNewsPageCount, chineseNewsDataValid);
   } else {
-    displaySucceeded = epaperDisplay.showPng(
-        downloadedImages[pageIndex], latestTemperatureCelsius,
+    displaySucceeded = epaperDisplay.showFrame(
+        cachedFrames[pageIndex], latestTemperatureCelsius,
         latestRelativeHumidity,
-        pageIndex == AppConfig::kForecastPageIndex, sensorDataValid);
+        AppConfig::kSht41Enabled && pageIndex == AppConfig::kForecastPageIndex,
+        sensorDataValid);
   }
   if (!displaySucceeded) {
     Serial.println("页面显示失败");
@@ -205,6 +243,9 @@ bool isPageDisplayDue(uint32_t now, uint32_t pageDurationMs,
 }
 
 uint32_t currentPageDisplayDurationMs() {
+  if (initialPreviewActive) {
+    return AppConfig::kInitialPreviewPageDurationMs;
+  }
   const bool isNewsPage =
       currentPageIndex >= AppConfig::kNewsPageIndex &&
       currentPageIndex <
@@ -217,14 +258,31 @@ uint32_t currentPageDisplayDurationMs() {
       currentPageIndex < AppConfig::kChineseNewsPageIndex +
                              AppConfig::kChineseNewsPageCount;
   return isChineseNewsPage ? AppConfig::kChineseNewsPageDisplayDurationMs
-                           : AppConfig::kInterfaceDisplayDurationMs;
+                           : AppConfig::kImagePageDisplayDurationMs;
+}
+
+PageTiming currentPageTiming() {
+  const uint32_t normalMs = currentPageDisplayDurationMs();
+  const time_t clockNow = time(nullptr);
+  tm local = {};
+  if (clockNow < 1704067200 || localtime_r(&clockNow, &local) == nullptr) {
+    return {normalMs, UINT32_MAX};
+  }
+  return pageTimingAt(local.tm_hour * 3600U + local.tm_min * 60U + local.tm_sec,
+      normalMs, AppConfig::kSlowPageStartHour, AppConfig::kSlowPageEndHour,
+      AppConfig::kSlowPageDurationMs);
 }
 
 bool refreshContent() {
   if (!hasPendingContentRefresh()) {
     return true;
   }
-  if (!connectWifi()) {
+  WifiSession wifiSession;
+  // A cold boot may connect once for NTP, before any application requests.
+  if (!networkTimeReady) {
+    syncNetworkTime();
+  }
+  if (!networkRequestsAllowed() || !connectWifi()) {
     return false;
   }
 
@@ -267,12 +325,11 @@ bool refreshContent() {
 
     Serial.print("正在检测图片: ");
     Serial.println(imageName);
-    if (!inspectPsramImage(refreshedImage)) {
-      Serial.println("PSRAM 图片读取校验失败，继续保留旧图片");
+    if (!epaperDisplay.prepareFrame(refreshedImage, cachedFrames[index])) {
+      Serial.println("图片解码或 CRC 校验失败，继续保留旧图片");
       continue;
     }
 
-    downloadedImages[index].swap(refreshedImage);
     pendingImageRefresh[index] = false;
     updateSht41();
   }
@@ -287,27 +344,45 @@ bool refreshContent() {
 }
 
 bool initializeSlideshow() {
-  if (!displayReady || !refreshContent()) {
+  if (!displayReady) {
     return false;
   }
-  lastContentRefreshMs = millis();
+  if (refreshContent()) {
+    lastContentRefreshMs = millis();
+  }
+  lastContentRefreshAttemptMs = millis();
 
-  Serial.print(AppConfig::kInterfaceCount);
-  Serial.println(" 个界面的数据已准备完成，开始循环展示");
-  if (!showPage(0)) {
-    Serial.println("首页显示失败，无法启动图片轮播");
+  const size_t firstPage =
+      findReadyPage(0, AppConfig::kPageCount, false, isPageReady);
+  if (firstPage == SIZE_MAX || !showPage(firstPage)) {
+    Serial.println("暂无可显示页面，将稍后重试");
     return false;
   }
+  Serial.println("开始展示已准备好的页面，缺失内容将在后续重试");
 
-  initialPreviewActive = true;
-  initialPreviewPagesShown = 1;
-  Serial.println("开始首次快速预览，每个页面显示 10 秒");
+  initialPreviewActive = AppConfig::kInitialPreviewEnabled;
+  if (initialPreviewActive) {
+    Serial.println("开始首次预览：通常每页 10 秒，凌晨 02:00–08:00 每页 30 分钟");
+  }
   slideshowReady = true;
   return true;
 }
 
 void setup() {
   Serial.begin(115200);
+  if (!initializeWifiPolicy()) {
+    Serial.println("禁网监控初始化失败，禁止联网");
+  }
+  if (AppConfig::kBoardRgbLedPin >= 0) {
+    const uint8_t ledPin = AppConfig::kBoardRgbLedPin;
+    rgbLedWrite(ledPin, 0, 0, 0);
+    rmtDeinit(ledPin);
+    pinMode(ledPin, OUTPUT);
+    digitalWrite(ledPin, LOW);
+    delay(1);  // Latch the all-zero WS2812 frame before parking DIN high.
+    // R1 is 1 kOhm to 3.3 V: leaving DIN low would waste about 3.3 mA.
+    digitalWrite(ledPin, HIGH);
+  }
   delay(1000);
 
   if (AppConfig::kSht41Enabled) {
@@ -332,7 +407,61 @@ void setup() {
   lastSlideshowAttemptMs = millis();
   lastContentRefreshAttemptMs = lastSlideshowAttemptMs;
 
-  syncNetworkTime();
+}
+
+void sleepUntilNextTask() {
+  // All network requests and panel refreshes are synchronous and complete here.
+  if (!disconnectWifi()) {
+    delay(1000);
+    return;
+  }
+  if (!AppConfig::kLightSleepEnabled) {
+    delay(10);
+    return;
+  }
+
+  const uint32_t now = millis();
+  uint32_t waitMs = UINT32_MAX;
+  if (AppConfig::kSht41Enabled) {
+    waitMs = min(waitMs, remainingUntil(now, lastSensorReadMs,
+        sht41Ready ? AppConfig::kSensorReadIntervalMs
+                   : AppConfig::kSensorRetryIntervalMs));
+  }
+  if (!networkTimeReady) {
+    waitMs = min(waitMs, max(wifiRetryRemainingMs(now),
+        remainingUntil(now, lastTimeSyncAttemptMs,
+                       AppConfig::kTimeSyncRetryIntervalMs)));
+  }
+  if (!slideshowReady) {
+    waitMs = min(waitMs, nextSlideshowAttemptWaitMs(now));
+  } else {
+    waitMs = min(waitMs, nextContentAttemptWaitMs(now));
+    const PageTiming timing = currentPageTiming();
+    waitMs = min(waitMs, timing.boundaryWaitMs);
+    const uint32_t pageInterval = pageDisplayRetryPending
+        ? (initialPreviewActive ? AppConfig::kInitialPreviewPageDurationMs
+                                : AppConfig::kPageDisplayRetryIntervalMs)
+        : timing.durationMs;
+    waitMs = min(waitMs, remainingUntil(now,
+        pageDisplayRetryPending ? lastPageDisplayAttemptMs : lastPageChangeMs,
+        pageInterval));
+  }
+
+  if (waitMs < AppConfig::kMinimumSleepMs) {
+    delay(1);
+    return;
+  }
+  // Arduino-ESP32 millis() uses esp_timer, compensated across light sleep.
+  // Keep default memory power domains: the slideshow cache lives in PSRAM.
+  esp_err_t result = esp_sleep_enable_timer_wakeup(uint64_t(waitMs) * 1000ULL);
+  if (result == ESP_OK) {
+    Serial.flush();
+    result = esp_light_sleep_start();
+  }
+  if (result != ESP_OK) {
+    Serial.printf("浅睡眠失败: %s\n", esp_err_to_name(result));
+    delay(1000);  // Avoid a busy loop if hardware/SDK rejects sleep.
+  }
 }
 
 void loop() {
@@ -340,14 +469,14 @@ void loop() {
 
   uint32_t now = millis();
   if (!networkTimeReady &&
+      wifiRetryRemainingMs(now) == 0 &&
       now - lastTimeSyncAttemptMs >= AppConfig::kTimeSyncRetryIntervalMs) {
     syncNetworkTime();
     now = millis();
   }
 
   if (!slideshowReady) {
-    if (now - lastSlideshowAttemptMs >=
-        AppConfig::kSlideshowRetryIntervalMs) {
+    if (nextSlideshowAttemptWaitMs(now) == 0) {
       if (!displayReady) {
         Serial.println("正在重新初始化墨水屏...");
         displayReady = epaperDisplay.begin();
@@ -364,17 +493,12 @@ void loop() {
       }
       lastSlideshowAttemptMs = millis();
     }
-    delay(10);
+    sleepUntilNextTask();
     return;
   }
 
-  const bool contentRefreshDue =
-      now - lastContentRefreshMs >= AppConfig::kContentRefreshIntervalMs;
-  const bool refreshRetryDue =
-      now - lastContentRefreshAttemptMs >=
-      AppConfig::kContentRefreshRetryIntervalMs;
-  if (contentRefreshDue && refreshRetryDue) {
-    Serial.print("已到 3 小时内容更新时间，正在重新请求 ");
+  if (nextContentAttemptWaitMs(now) == 0) {
+    Serial.print("正在更新待获取的内容，界面数量: ");
     Serial.print(AppConfig::kInterfaceCount);
     Serial.println(" 个页面的数据...");
     if (!hasPendingContentRefresh()) {
@@ -389,28 +513,48 @@ void loop() {
   }
 
   now = millis();
+  const PageTiming timing = currentPageTiming();
   if (initialPreviewActive &&
-      isPageDisplayDue(now, AppConfig::kInitialPreviewPageDurationMs,
+      isPageDisplayDue(now, timing.durationMs,
                        AppConfig::kInitialPreviewPageDurationMs)) {
-    if (initialPreviewPagesShown < AppConfig::kPageCount) {
-      const size_t nextPageIndex =
-          (currentPageIndex + 1) % AppConfig::kPageCount;
-      if (showPage(nextPageIndex)) {
-        ++initialPreviewPagesShown;
+    const size_t nextPageIndex = findReadyPage(
+        currentPageIndex + 1, AppConfig::kPageCount, false, isPageReady);
+    if (nextPageIndex != SIZE_MAX) {
+      showPage(nextPageIndex);
+    } else {
+      const size_t firstPage =
+          findReadyPage(0, AppConfig::kPageCount, false, isPageReady);
+      if (firstPage == SIZE_MAX) {
+        initialPreviewActive = false;
+        slideshowReady = false;
+        pageDisplayRetryPending = false;
+        lastSlideshowAttemptMs = millis();
+        sleepUntilNextTask();
+        return;
       }
-    } else if (showPage(0)) {
+      if (firstPage != currentPageIndex && !showPage(firstPage)) {
+        sleepUntilNextTask();
+        return;
+      }
+      lastPageChangeMs = millis();
       initialPreviewActive = false;
       Serial.println(
-          "首次快速预览完成，开始正常轮播：每个界面显示 8 分钟");
+          "预览完成：图片每页 10 分钟，新闻每页 5 分钟，凌晨 02:00–08:00 每页 30 分钟");
     }
   } else if (!initialPreviewActive &&
-             isPageDisplayDue(now, currentPageDisplayDurationMs(),
+             isPageDisplayDue(now, timing.durationMs,
                               AppConfig::kPageDisplayRetryIntervalMs)) {
-    const size_t nextPageIndex =
-        (currentPageIndex + 1) % AppConfig::kPageCount;
+    const size_t nextPageIndex = findReadyPage(
+        currentPageIndex + 1, AppConfig::kPageCount, true, isPageReady);
     // 显示失败时保留当前页，并在 30 秒后重试，避免频繁刷新。
-    showPage(nextPageIndex);
+    if (nextPageIndex != SIZE_MAX) {
+      showPage(nextPageIndex);
+    } else {
+      slideshowReady = false;
+      pageDisplayRetryPending = false;
+      lastSlideshowAttemptMs = millis();
+    }
   }
 
-  delay(10);
+  sleepUntilNextTask();
 }

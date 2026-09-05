@@ -6,7 +6,8 @@
 class EpaperDisplay {
  public:
   bool begin();
-  bool showPng(const PsramImage &pngImage, float temperatureCelsius,
+  bool prepareFrame(const PsramImage &pngImage, PsramImage &destination);
+  bool showFrame(const PsramImage &image, float temperatureCelsius,
                float relativeHumidity, bool showSensorPanel,
                bool sensorDataValid);
   bool showNews(const NewsList &news, size_t firstItemIndex,
